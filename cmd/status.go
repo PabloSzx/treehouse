@@ -58,7 +58,7 @@ var statusCmd = &cobra.Command{
 			return err
 		}
 
-		worktrees, err := pool.List(poolDir)
+		worktrees, err := pool.Snapshot(poolDir)
 		if err != nil {
 			return err
 		}

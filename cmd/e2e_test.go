@@ -1552,16 +1552,12 @@ func TestGetRecoversFromStaleWorktreeRegistration(t *testing.T) {
 	repoDir, homeDir := setupTestRepo(t)
 	env := []string{"SHELL=" + exitShellBin}
 
-	// Materialize the pool directory so we can plant the stale entry at the
-	// exact slot path Acquire will target (slot 1 / <repo-basename>).
-	if _, _, code := runTreehouse(t, repoDir, homeDir, nil, "status"); code != 0 {
-		t.Fatalf("initial status failed (code %d)", code)
+	// Plant the stale entry at the exact slot Acquire will target. Read-only
+	// status no longer creates a pool as a side effect.
+	poolDir, err := config.ResolvePoolDir(repoDir, homeDir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	matches, err := filepath.Glob(filepath.Join(homeDir, ".treehouse", filepath.Base(repoDir)+"-*"))
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("expected exactly one pool dir under %s/.treehouse, got %v: %v", homeDir, matches, err)
-	}
-	poolDir := matches[0]
 	stalePath := filepath.Join(poolDir, "1", filepath.Base(repoDir))
 
 	// Simulate a crashed scout: register a worktree at the slot path, then

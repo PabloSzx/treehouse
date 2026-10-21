@@ -437,7 +437,7 @@ func recoverCorruptState(poolDir string, parseErr error) (State, error) {
 			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering worktrees found on disk as leased because their seeded-file inventory is unknown. See `treehouse status` for automatic recovery results and any slots that still need inspection.\n", stateFilePath(poolDir), parseErr)
+	fmt.Fprintf(os.Stderr, "treehouse: WARNING: state file %s is corrupt or truncated (%v); recovering worktrees found on disk as leased because their seeded-file inventory is unknown. See `treehouse status` to inspect recovered slots; automatic recovery runs during the next state-locking pool operation.\n", stateFilePath(poolDir), parseErr)
 	return State{Worktrees: recovered}, nil
 }
 

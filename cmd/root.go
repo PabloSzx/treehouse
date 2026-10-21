@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/kunchenguid/treehouse/v3/internal/updater"
@@ -23,6 +24,10 @@ func SetVersion(v string) {
 	rootCmd.Version = v
 }
 
+func isLocalBuildVersion(v string) bool {
+	return v == "dev" || strings.HasSuffix(v, "-local")
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "treehouse",
 	Short: "Manage a pool of git worktrees for parallel AI agent workflows",
@@ -35,10 +40,10 @@ so that multiple AI coding agents can work on the same repo in parallel.`,
 		return getRunE(cmd, args)
 	},
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// Skip update check for dev builds, Nix store installs (upgraded
+		// Skip update checks for local builds, Nix store installs (upgraded
 		// through Nix, not `treehouse update`), the update command itself,
 		// or when explicitly suppressed via env var.
-		if version == "dev" || os.Getenv("TREEHOUSE_NO_UPDATE_CHECK") == "1" || runningFromNixStore() {
+		if isLocalBuildVersion(version) || os.Getenv("TREEHOUSE_NO_UPDATE_CHECK") == "1" || runningFromNixStore() {
 			return
 		}
 		if cmd.Name() == "update" {

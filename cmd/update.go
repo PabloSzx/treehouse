@@ -20,6 +20,10 @@ var updateCmd = &cobra.Command{
 			return nil
 		}
 
+		if isLocalBuildVersion(version) {
+			return errors.New("self-update is blocked for local builds; rebuild from the source checkout to preserve local changes")
+		}
+
 		if runningFromNixStore() {
 			return errors.New("self-update is not available for Nix installs; upgrade through Nix")
 		}

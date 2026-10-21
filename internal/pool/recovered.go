@@ -11,8 +11,8 @@ import (
 )
 
 // recoverQuarantinedEntries runs under the state lock before every pool
-// operation, so a recovered entry proven safe is freed whichever command runs
-// next. An unreadable state is left for the operation itself to report.
+// operation that takes the lock. Read-only status snapshots defer recovery.
+// An unreadable state is left for the operation itself to report.
 func recoverQuarantinedEntries(poolDir string) error {
 	state, err := ReadState(poolDir)
 	if err != nil {

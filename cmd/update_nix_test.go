@@ -78,34 +78,41 @@ func captureStderr(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-func TestUpdateRefusedInNixStore(t *testing.T) {
-	home := isolateHome(t)
-	setNixStore(t, true)
-	setReleaseVersion(t, "v3.0.0")
-	transport := &countingTransport{}
-	prev := http.DefaultTransport
-	http.DefaultTransport = transport
-	t.Cleanup(func() { http.DefaultTransport = prev })
+func TestSelfUpdateRefusedForManagedBuilds(t *testing.T) {
+	for _, tc := range []struct {
+		name, version, reason string
+		nix                   bool
+	}{
+		{name: "Nix", version: "v3.0.0", reason: "Nix", nix: true},
+		{name: "local source build", version: "v3.1.5-1-gabcdef0-local", reason: "local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			setNixStore(t, tc.nix)
+			setReleaseVersion(t, tc.version)
+			transport := &countingTransport{}
+			prev := http.DefaultTransport
+			http.DefaultTransport = transport
+			t.Cleanup(func() { http.DefaultTransport = prev })
 
-	err := updateCmd.RunE(updateCmd, nil)
-	if err == nil {
-		t.Fatal("update in the Nix store returned nil, want an error")
-	}
-	if !strings.Contains(err.Error(), "Nix") {
-		t.Fatalf("error %q does not mention Nix", err)
-	}
-	if code := ExitCode(err); code == 0 {
-		t.Fatalf("exit status = %d, want non-zero", code)
-	}
-	if transport.requests != 0 {
-		t.Fatalf("update made %d network request(s) in the Nix store, want 0", transport.requests)
-	}
-	if _, err := os.Stat(filepath.Join(home, ".treehouse")); !os.IsNotExist(err) {
-		t.Fatalf("update wrote under the home directory in the Nix store: %v", err)
+			err := updateCmd.RunE(updateCmd, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("update must refuse %s builds: %v", tc.reason, err)
+			}
+			if code := ExitCode(err); code == 0 {
+				t.Fatalf("exit status = %d, want non-zero", code)
+			}
+			if transport.requests != 0 {
+				t.Fatalf("update made %d network request(s), want 0", transport.requests)
+			}
+			if _, err := os.Stat(filepath.Join(home, ".treehouse")); !os.IsNotExist(err) {
+				t.Fatalf("refused update wrote under the home directory: %v", err)
+			}
+		})
 	}
 }
 
-func TestUpdateNoticeSilentInNixStore(t *testing.T) {
+func TestUpdateNoticeSilentForManagedBuilds(t *testing.T) {
 	probe := &cobra.Command{Use: "status"}
 
 	t.Run("shows the cached notice outside the store", func(t *testing.T) {
@@ -124,32 +131,40 @@ func TestUpdateNoticeSilentInNixStore(t *testing.T) {
 		}
 	})
 
-	t.Run("prints nothing and spawns nothing in the store", func(t *testing.T) {
-		home := isolateHome(t)
-		setNixStore(t, true)
-		setReleaseVersion(t, "v3.0.0")
-		writeUpdateCache(t, home, "v9.9.9")
-		spawned := 0
-		prev := spawnBackgroundCheck
-		spawnBackgroundCheck = func(string) error { spawned++; return nil }
-		t.Cleanup(func() { spawnBackgroundCheck = prev })
+	for _, managed := range []struct {
+		name, version string
+		nix           bool
+	}{
+		{name: "Nix", version: "v3.0.0", nix: true},
+		{name: "local", version: "v3.1.5-1-gabcdef0-local"},
+	} {
+		t.Run("silent for "+managed.name, func(t *testing.T) {
+			home := isolateHome(t)
+			setNixStore(t, managed.nix)
+			setReleaseVersion(t, managed.version)
+			writeUpdateCache(t, home, "v9.9.9")
+			spawned := 0
+			prev := spawnBackgroundCheck
+			spawnBackgroundCheck = func(string) error { spawned++; return nil }
+			t.Cleanup(func() { spawnBackgroundCheck = prev })
 
-		out := captureStderr(t, func() { rootCmd.PersistentPreRun(probe, nil) })
-		if out != "" {
-			t.Fatalf("notice printed in the Nix store: %q", out)
-		}
-		if spawned != 0 {
-			t.Fatalf("background check spawned %d time(s) in the Nix store, want 0", spawned)
-		}
+			out := captureStderr(t, func() { rootCmd.PersistentPreRun(probe, nil) })
+			if out != "" {
+				t.Fatalf("notice printed for a managed build: %q", out)
+			}
+			if spawned != 0 {
+				t.Fatalf("background check spawned %d time(s) for a managed build, want 0", spawned)
+			}
 
-		if err := os.Remove(filepath.Join(home, ".treehouse", "update-check.json")); err != nil {
-			t.Fatal(err)
-		}
-		captureStderr(t, func() { rootCmd.PersistentPreRun(probe, nil) })
-		if spawned != 0 {
-			t.Fatalf("background check spawned %d time(s) for a stale cache in the Nix store, want 0", spawned)
-		}
-	})
+			if err := os.Remove(filepath.Join(home, ".treehouse", "update-check.json")); err != nil {
+				t.Fatal(err)
+			}
+			captureStderr(t, func() { rootCmd.PersistentPreRun(probe, nil) })
+			if spawned != 0 {
+				t.Fatalf("background check spawned %d time(s) for a managed build with a stale cache, want 0", spawned)
+			}
+		})
+	}
 
 	t.Run("spawns the background check outside the store", func(t *testing.T) {
 		isolateHome(t)

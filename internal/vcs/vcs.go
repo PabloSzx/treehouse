@@ -23,6 +23,7 @@
 package vcs
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -647,6 +648,19 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 // IsDirty reports tracked or untracked local changes in the worktree.
 func IsDirty(worktreePath string) (bool, error) {
 	return backendForWorktree(worktreePath).IsDirty(worktreePath)
+}
+
+// InspectDirty is the cancellable, observational dirty check used by status.
+// Lifecycle operations continue using IsDirty and their guarded reset checks.
+func InspectDirty(ctx context.Context, worktreePath string) (bool, error) {
+	switch WorktreeBackendName(worktreePath) {
+	case "git":
+		return gitvcs.InspectDirty(ctx, worktreePath)
+	case "jj":
+		return jjvcs.InspectDirty(ctx, worktreePath)
+	default:
+		return false, fmt.Errorf("cannot inspect a worktree without a VCS marker: %s", worktreePath)
+	}
 }
 
 // ShortHash returns a short stable hash of s, used for pool directory naming.

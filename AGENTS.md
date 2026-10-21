@@ -15,6 +15,10 @@ User-facing behavior: [README.md](README.md). Settings and precedence: [treehous
 - `make build`, `make test` (`go test ./...`), `make lint`
 - `GOOS=windows go build ./...` before shipping; CI tests on Linux, macOS, and Windows
 
+## Local installation
+
+This machine uses a locally maintained Treehouse build. Before rebuilding, replacing, or updating the system binary, read `~/.local/share/treehouse/LOCAL_BUILD.md`. Preserve its status optimizations and self-update block; stamp maintained builds with a `-local` version suffix.
+
 ## Invariants
 
 - Acquire reuse, prune, and destroy fail closed on unproven dirtiness, merge state, ownership, or slot marker; `return` may reset a dirty tree after confirmation.
