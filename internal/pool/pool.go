@@ -1191,7 +1191,7 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return inspectListedWorktrees(poolDir, state), nil
+	return inspectListedWorktrees(poolDir, state)
 }
 
 var findProcessesInWorktrees = process.FindProcessesInWorktrees
@@ -1199,7 +1199,11 @@ var findProcessesInWorktrees = process.FindProcessesInWorktrees
 // Lifecycle callers revalidate reservations under the state lock before acting.
 // Process and VCS inspection only report this listing's snapshot, so they need
 // not prevent a concurrent acquisition or return from updating pool state.
-func inspectListedWorktrees(poolDir string, state State) []WorktreeStatus {
+// Each slot's own VCS commands still run under the pool lock, one slot at a
+// time: Git runs inside the slot it reads, and a concurrent acquisition's
+// process scan would otherwise take that observer for an occupant and skip an
+// available slot.
+func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, error) {
 	var paths []string
 	for _, wt := range state.Worktrees {
 		if !wt.Destroying {
@@ -1249,12 +1253,7 @@ func inspectListedWorktrees(poolDir string, state State) []WorktreeStatus {
 		// never be inherited. Detached, jj, and markerless slots report an
 		// empty branch; a failed read is reported as BranchErr instead of
 		// collapsing into that empty value.
-		branch, detached, branchErr := vcs.CheckedOutBranch(wt.Path)
-		ws.Branch = branch
-		ws.Detached = detached
-		if branchErr != nil {
-			ws.BranchErr = branchErr.Error()
-		}
+		//
 		// The slot is classified WITHOUT the cwd, which is then laid over
 		// the answer. The ranking the operator sees is unchanged - leased
 		// and a live owner reservation still outrank "you're here", and it
@@ -1262,24 +1261,36 @@ func inspectListedWorktrees(poolDir string, state State) []WorktreeStatus {
 		// is now known, so a caller can tell a slot somebody holds from one
 		// whose only claim is the shell standing in it.
 		owned := ownerAlive(wt)
-		switch {
-		case wt.Leased:
-			ws.Status = StatusLeased
-			ws.LeaseID = wt.LeaseID
-			ws.LeaseHolder = wt.LeaseHolder
-			ws.LeasedAt = wt.LeasedAt
-		case owned:
-			ws.Status = StatusInUse
-		case scanErr != nil:
-			ws.Status = StatusUnverified
-		case len(procs) > 0:
-			ws.Status = StatusInUse
-		case ws.Flavor == "":
-			ws.Status = StatusDamaged
-		default:
-			if dirty, _ := vcs.IsDirty(wt.Path); dirty {
-				ws.Status = StatusDirty
+		err := withPoolLock(poolDir, func() error {
+			branch, detached, branchErr := vcs.CheckedOutBranch(wt.Path)
+			ws.Branch = branch
+			ws.Detached = detached
+			if branchErr != nil {
+				ws.BranchErr = branchErr.Error()
 			}
+			switch {
+			case wt.Leased:
+				ws.Status = StatusLeased
+				ws.LeaseID = wt.LeaseID
+				ws.LeaseHolder = wt.LeaseHolder
+				ws.LeasedAt = wt.LeasedAt
+			case owned:
+				ws.Status = StatusInUse
+			case scanErr != nil:
+				ws.Status = StatusUnverified
+			case len(procs) > 0:
+				ws.Status = StatusInUse
+			case ws.Flavor == "":
+				ws.Status = StatusDamaged
+			default:
+				if dirty, _ := vcs.IsDirty(wt.Path); dirty {
+					ws.Status = StatusDirty
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 		// Damaged is not overlaid. A missing marker is a different kind of
 		// fact from the reservations above: it says the slot's own contents
@@ -1305,7 +1316,7 @@ func inspectListedWorktrees(poolDir string, state State) []WorktreeStatus {
 
 		result = append(result, ws)
 	}
-	return result
+	return result, nil
 }
 
 // FindByName returns the pool entry registered under name, or nil when this
