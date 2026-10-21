@@ -23,9 +23,11 @@ const (
 	StatusLeased    = "leased"
 	StatusHere      = "you're here"
 	StatusDamaged   = "damaged"
-	// StatusUnverified means process use or cleanliness could not be checked.
-	// Leased, a live owner reservation, and "you're here" are facts known
-	// independently and still outrank it.
+	// StatusUnverified is a slot whose process table could not be read: the
+	// question "is anything running here?" has no answer, so nothing decided
+	// from the process list (in-use) or from its absence (damaged, dirty,
+	// available) is reported. Leased, a live owner reservation, and "you're
+	// here" are facts known without a scan and still outrank it.
 	StatusUnverified = "unverified"
 )
 
@@ -1275,11 +1277,7 @@ func inspectListedWorktrees(poolDir string, state State) []WorktreeStatus {
 		case ws.Flavor == "":
 			ws.Status = StatusDamaged
 		default:
-			dirty, err := vcs.IsDirty(wt.Path)
-			if err != nil {
-				ws.Status = StatusUnverified
-				fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not verify local changes in %s (%v); cleanliness is unverified.\n", wt.Path, err)
-			} else if dirty {
+			if dirty, _ := vcs.IsDirty(wt.Path); dirty {
 				ws.Status = StatusDirty
 			}
 		}

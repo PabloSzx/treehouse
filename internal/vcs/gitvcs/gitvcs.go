@@ -1407,7 +1407,7 @@ func IsDirty(worktreePath string) (bool, error) {
 	// A boolean dirty check needs only directory-level untracked output, which
 	// lets Git use its untracked cache when configured. Renames are dirty
 	// regardless of how their paths are paired.
-	out, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=normal", "--no-renames")
+	out, err := runGit(worktreePath, "--no-optional-locks", "status", "--porcelain", "--untracked-files=normal", "--no-renames")
 	if err != nil {
 		return false, err
 	}
