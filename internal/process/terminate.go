@@ -10,11 +10,17 @@ import (
 )
 
 // TerminateWorktreeProcesses finds every process whose cwd is within the given
-// worktree path and terminates them.
+// worktree path, except the caller, its ancestors, and agent-harness sessions,
+// and terminates the rest.
 //
 // On unix it sends SIGTERM and waits up to gracePeriod for processes to exit.
 // It then sends SIGKILL to any survivors and waits up to gracePeriod again for
 // them to exit. On windows it uses TerminateProcess.
+//
+// Agent-harness sessions (pi, codex, claude, cursor-agent, and their
+// descendants) are never signalled: their state lives outside the worktree, so
+// killing them destroys a live conversation without making the slot safer to
+// reset.
 //
 // Returns the list of processes that were targeted. It returns an error when
 // process discovery or caller ancestry lookup fails. Individual kill failures
@@ -25,6 +31,10 @@ func TerminateWorktreeProcesses(worktreePath string, gracePeriod time.Duration) 
 		return nil, err
 	}
 	procs, err = DropProtectedProcesses(procs)
+	if err != nil {
+		return nil, err
+	}
+	procs, err = DropAgentSessions(procs)
 	if err != nil {
 		return nil, err
 	}
@@ -42,18 +52,22 @@ func TerminateWorktreeProcesses(worktreePath string, gracePeriod time.Duration) 
 }
 
 // UnprotectedProcessesInWorktree returns processes whose cwd is within the
-// worktree, excluding the caller and its ancestors. These are exactly the
-// processes TerminateWorktreeProcesses would target, so a non-empty result
-// after termination means a foreign live writer remains inside the worktree.
-// Callers re-scan with it before resetting a slot so a process that started
-// during the grace period, or one an ancestry-lookup failure spared, is not
-// mistaken for a quiet worktree.
+// worktree, excluding the caller, its ancestors, and agent-harness sessions.
+// These are exactly the processes TerminateWorktreeProcesses would target, so a
+// non-empty result after termination means a foreign live writer remains inside
+// the worktree. Callers re-scan with it before resetting a slot so a process
+// that started during the grace period, or one an ancestry-lookup failure
+// spared, is not mistaken for a quiet worktree.
 func UnprotectedProcessesInWorktree(worktreePath string) ([]ProcessInfo, error) {
 	procs, err := FindProcessesInWorktree(worktreePath)
 	if err != nil {
 		return nil, err
 	}
-	return DropProtectedProcesses(procs)
+	procs, err = DropProtectedProcesses(procs)
+	if err != nil {
+		return nil, err
+	}
+	return DropAgentSessions(procs)
 }
 
 // DropProtectedProcesses removes the caller and its ancestors from an

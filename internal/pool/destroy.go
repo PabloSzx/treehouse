@@ -52,6 +52,10 @@ const destroyGracePeriod = 2 * time.Second
 var findProcessesInWorktree = process.FindProcessesInWorktree
 var terminateWorktreeProcesses = process.TerminateWorktreeProcesses
 
+// dropAgentSessions spares agent-harness sessions from destroy's survivor
+// verification, matching TerminateWorktreeProcesses, which never signals them.
+var dropAgentSessions = process.DropAgentSessions
+
 // dropProtectedProcesses removes the caller and its ancestors from a scanned
 // list, leaving the set `return` would terminate. List filters with it so
 // status and return agree on what is attached to a slot, and applies it to the
@@ -502,6 +506,13 @@ func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pr
 					continue
 				}
 				survivors, err := findProcessesInWorktree(path)
+				if err != nil {
+					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
+					current.Detail = "could not verify worktree processes stopped: " + err.Error()
+					skips = append(skips, DestroySkip{Target: current})
+					continue
+				}
+				survivors, err = dropAgentSessions(survivors)
 				if err != nil {
 					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not verify worktree processes stopped: " + err.Error()

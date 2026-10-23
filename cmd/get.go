@@ -319,7 +319,10 @@ func getLeaseRunE(repoRoot, poolDir string, cfg config.Config, options pool.Acqu
 // killLingeringProcesses terminates any process whose cwd is within the given
 // worktree, then verifies the worktree is clear before it is handed back to the
 // pool. Detached tools (e.g. opencode servers that ignore SIGHUP) are the usual
-// reason a worktree is not quiet on return.
+// reason a worktree is not quiet on return. Agent-harness sessions (pi, codex,
+// claude, cursor-agent, and their descendants) are never signalled and never
+// count as survivors, so returning a worktree a live session stands in does
+// not close the session.
 //
 // It returns an error when termination cannot be proven complete: a process
 // could not be signalled (e.g. an ancestry-lookup failure), or a live writer
