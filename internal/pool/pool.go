@@ -1200,9 +1200,9 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 var findProcessesInWorktrees = process.FindProcessesInWorktrees
 
 // Lifecycle callers revalidate reservations under the state lock before acting.
-// Process and VCS inspection only report this listing's snapshot, so they need
-// not prevent a concurrent acquisition or return from updating pool state.
-// Each slot's own VCS commands still run under the pool lock, one slot at a
+// The process scan only reports this listing's snapshot, so it need not
+// prevent a concurrent acquisition or return from updating pool state.
+// Each slot's entry and VCS facts are read under the pool lock, one slot at a
 // time: Git runs inside the slot it reads, and a concurrent acquisition's
 // process scan would otherwise take that observer for an occupant and skip an
 // available slot.
@@ -1220,16 +1220,9 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 	}
 	cwd, _ := os.Getwd()
 	result := make([]WorktreeStatus, 0, len(paths))
-	for _, wt := range state.Worktrees {
-		if wt.Destroying {
+	for _, listed := range state.Worktrees {
+		if listed.Destroying {
 			continue
-		}
-		ws := WorktreeStatus{
-			Name:           wt.Name,
-			Path:           wt.Path,
-			Status:         StatusAvailable,
-			RecoveryReason: wt.RecoveryReason,
-			RecoveryBackup: recoveryBackup(poolDir, wt.Name),
 		}
 
 		// The two failure modes get different answers, which is why the
@@ -1242,17 +1235,41 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 		// is reported StatusUnverified (the machine-readable half) and the
 		// error is warned loudly on stderr (the diagnostic half), instead
 		// of silently presenting every slot as quiet.
-		procs := processes[wt.Path]
+		procs := processes[listed.Path]
 		if scanErr == nil {
 			if unprotected, filterErr := dropProtectedProcesses(procs); filterErr == nil {
 				procs = unprotected
 			}
 		}
-		ws.Processes = procs
 
+		var ws WorktreeStatus
+		present := false
 		err := withPoolLock(poolDir, func() error {
-			// Validate the registration under the same lock as the VCS reads;
-			// lifecycle operations may replace it after the state snapshot.
+			// Read the entry and validate the registration under the same lock
+			// as the VCS reads; lifecycle operations may lease, reserve, or
+			// remove the slot after the state snapshot.
+			current, err := ReadState(poolDir)
+			if err != nil {
+				return err
+			}
+			var wt WorktreeEntry
+			for _, entry := range current.Worktrees {
+				if entry.Name == listed.Name && entry.Path == listed.Path && !entry.Destroying {
+					wt, present = entry, true
+					break
+				}
+			}
+			if !present {
+				return nil
+			}
+			ws = WorktreeStatus{
+				Name:           wt.Name,
+				Path:           wt.Path,
+				Status:         StatusAvailable,
+				Processes:      procs,
+				RecoveryReason: wt.RecoveryReason,
+				RecoveryBackup: recoveryBackup(poolDir, wt.Name),
+			}
 			flavor, markerErr := vcs.WorktreeBackendNameChecked(wt.Path)
 			ws.Flavor = flavor
 			owned := ownerAlive(wt)
@@ -1303,8 +1320,9 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 		if err != nil {
 			return nil, err
 		}
-
-		result = append(result, ws)
+		if present {
+			result = append(result, ws)
+		}
 	}
 	return result, nil
 }
