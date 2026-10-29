@@ -1262,6 +1262,9 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 			}
 			owned := ownerAlive(wt)
 			var rescanErr error
+			// The unlocked batch may have caught another command's Git running
+			// in this slot under the lock; it has exited by now, so re-scan
+			// before processes alone mark the slot in-use.
 			if !wt.Leased && !owned && len(procs) > 0 {
 				var rescanned map[string][]process.ProcessInfo
 				rescanned, rescanErr = findProcessesInWorktrees([]string{wt.Path})
