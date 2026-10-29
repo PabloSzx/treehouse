@@ -1,6 +1,8 @@
 package pool
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,5 +115,46 @@ func TestListOmitsSlotDestroyedDuringProcessInspection(t *testing.T) {
 	})
 	if len(statuses) != 1 || statuses[0].Path != kept || statuses[0].Status != StatusAvailable {
 		t.Fatalf("listing reports a slot destroyed after its snapshot: %+v", statuses)
+	}
+}
+
+// A slot the batched scan found occupied is confirmed under its lock; when that
+// confirmation cannot read the process table, the slot is unverified, not quiet.
+func TestListReportsUnverifiedWhenLockedRescanFails(t *testing.T) {
+	repo, poolDir := setupRepo(t)
+	path, err := Acquire(repo, poolDir, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearOwnerReservation(t, poolDir, path)
+	originalScan, originalFilter := findProcessesInWorktrees, dropProtectedProcesses
+	t.Cleanup(func() {
+		findProcessesInWorktrees, dropProtectedProcesses = originalScan, originalFilter
+	})
+	scans := 0
+	findProcessesInWorktrees = func(paths []string) (map[string][]process.ProcessInfo, error) {
+		scans++
+		if scans > 1 {
+			return nil, errors.New("cannot read the process table")
+		}
+		return map[string][]process.ProcessInfo{path: {{PID: 4321, Name: "agent"}}}, nil
+	}
+	dropProtectedProcesses = func(procs []process.ProcessInfo) ([]process.ProcessInfo, error) { return procs, nil }
+
+	var statuses []WorktreeStatus
+	stderr := captureStderr(t, func() {
+		statuses, err = List(poolDir)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scans != 2 {
+		t.Fatalf("expected the batched scan and one locked re-scan, got %d scans", scans)
+	}
+	if len(statuses) != 1 || statuses[0].Status != StatusUnverified || len(statuses[0].Processes) != 0 {
+		t.Fatalf("a failed locked re-scan must report the slot unverified with no processes: %+v", statuses)
+	}
+	if strings.Count(stderr, "WARNING") != 1 || !strings.Contains(stderr, path) {
+		t.Fatalf("expected one warning naming %s, got stderr %q", path, stderr)
 	}
 }

@@ -1235,11 +1235,9 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 		// is reported StatusUnverified (the machine-readable half) and the
 		// error is warned loudly on stderr (the diagnostic half), instead
 		// of silently presenting every slot as quiet.
-		procs := processes[listed.Path]
+		var procs []process.ProcessInfo
 		if scanErr == nil {
-			if unprotected, filterErr := dropProtectedProcesses(procs); filterErr == nil {
-				procs = unprotected
-			}
+			procs = unprotectedProcesses(processes, listed.Path)
 		}
 
 		var ws WorktreeStatus
@@ -1262,6 +1260,18 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 			if !present {
 				return nil
 			}
+			owned := ownerAlive(wt)
+			var rescanErr error
+			if !wt.Leased && !owned && len(procs) > 0 {
+				var rescanned map[string][]process.ProcessInfo
+				rescanned, rescanErr = findProcessesInWorktrees([]string{wt.Path})
+				if rescanErr != nil {
+					procs = nil
+					fmt.Fprintf(os.Stderr, "treehouse: WARNING: could not read the process table to see what is running in %s (%v); it is reported %s with no processes.\n", wt.Path, rescanErr, StatusUnverified)
+				} else {
+					procs = unprotectedProcesses(rescanned, wt.Path)
+				}
+			}
 			ws = WorktreeStatus{
 				Name:           wt.Name,
 				Path:           wt.Path,
@@ -1272,7 +1282,6 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 			}
 			flavor, markerErr := vcs.WorktreeBackendNameChecked(wt.Path)
 			ws.Flavor = flavor
-			owned := ownerAlive(wt)
 			branch, detached, branchErr := vcs.CheckedOutBranch(wt.Path)
 			ws.Branch = branch
 			ws.Detached = detached
@@ -1287,7 +1296,7 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 				ws.LeasedAt = wt.LeasedAt
 			case owned:
 				ws.Status = StatusInUse
-			case scanErr != nil:
+			case scanErr != nil, rescanErr != nil:
 				ws.Status = StatusUnverified
 			case len(procs) > 0:
 				ws.Status = StatusInUse
@@ -1325,6 +1334,15 @@ func inspectListedWorktrees(poolDir string, state State) ([]WorktreeStatus, erro
 		}
 	}
 	return result, nil
+}
+
+// unprotectedProcesses keeps the raw scan when the ancestry lookup fails.
+func unprotectedProcesses(scanned map[string][]process.ProcessInfo, path string) []process.ProcessInfo {
+	procs := scanned[path]
+	if unprotected, err := dropProtectedProcesses(procs); err == nil {
+		return unprotected
+	}
+	return procs
 }
 
 // FindByName returns the pool entry registered under name, or nil when this
