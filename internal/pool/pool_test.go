@@ -232,8 +232,13 @@ func TestAcquire_CloneIdentityUnreadableCandidate(t *testing.T) {
 	if err := Release(poolDir, path); err != nil {
 		t.Fatal(err)
 	}
-	// Keep the slot and its marker, but make its Git identity unresolvable.
-	marker := []byte("gitdir: " + filepath.Join(filepath.Dir(repo), "missing.git") + "\n")
+	// Keep a valid backlink so the slot reaches clone-identity verification,
+	// but leave the repository metadata absent so that identity is unresolvable.
+	gitDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(gitDir, "gitdir"), []byte(filepath.Join(path, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := []byte("gitdir: " + gitDir + "\n")
 	if err := os.WriteFile(filepath.Join(path, ".git"), marker, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +302,7 @@ func TestRelease_CloneIdentityExistingState(t *testing.T) {
 	}
 }
 
-func setupRepo(t *testing.T) (repoDir, poolDir string) {
+func setupRepo(t *testing.T, initFlags ...string) (repoDir, poolDir string) {
 	t.Helper()
 	base := t.TempDir()
 	base, err := filepath.EvalSymlinks(base)
@@ -309,8 +314,8 @@ func setupRepo(t *testing.T) (repoDir, poolDir string) {
 	repoDir = filepath.Join(base, "myrepo")
 	poolDir = filepath.Join(base, "pool")
 
-	runGit(t, "", "init", "--bare", "--initial-branch=main", bareDir)
-	runGit(t, "", "init", "--initial-branch=main", repoDir)
+	runGit(t, "", append(append([]string{"init", "--bare", "--initial-branch=main"}, initFlags...), bareDir)...)
+	runGit(t, "", append(append([]string{"init", "--initial-branch=main"}, initFlags...), repoDir)...)
 	runGit(t, repoDir, "config", "user.email", "test@test.com")
 	runGit(t, repoDir, "config", "user.name", "Test")
 	runGit(t, repoDir, "remote", "add", "origin", bareDir)
@@ -815,7 +820,7 @@ func TestAcquire_FinalStateWriteFailurePreservesSeedInventoryForRecovery(t *test
 	}
 }
 
-func TestAcquire_InitialStateWriteFailureRecoversCreatedWorktree(t *testing.T) {
+func TestAcquire_InitialStateWriteFailureDoesNotCreateWorktree(t *testing.T) {
 	repoDir, poolDir := setupLocalRepo(t)
 	oldWriteState := writeState
 	writeState = func(string, State) error { return errors.New("state write failed") }
@@ -832,8 +837,11 @@ func TestAcquire_InitialStateWriteFailureRecoversCreatedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Worktrees) != 1 || !state.Worktrees[0].Leased || state.Worktrees[0].LeaseHolder != RecoveredLeaseHolder {
-		t.Fatalf("created worktree was not conservatively recovered: %#v", state.Worktrees)
+	if len(state.Worktrees) != 0 {
+		t.Fatalf("worktree created before its reservation was recorded: %#v", state.Worktrees)
+	}
+	if _, err := os.Stat(filepath.Join(poolDir, "1", filepath.Base(repoDir))); !os.IsNotExist(err) {
+		t.Fatalf("worktree path exists after failed reservation: %v", err)
 	}
 }
 
@@ -1058,7 +1066,7 @@ func TestAcquire_ReusedCommittedFinalStateWriteErrorReturnsAcquisition(t *testin
 }
 
 func TestAcquire_NewCommittedStateWriteErrorsReturnLease(t *testing.T) {
-	for _, failAt := range []int{1, 2} {
+	for _, failAt := range []int{1, 2, 3} {
 		t.Run(fmt.Sprintf("write-%d", failAt), func(t *testing.T) {
 			repoDir, poolDir := setupLocalRepo(t)
 			oldWriteState := writeState
@@ -2140,6 +2148,9 @@ func TestExecuteDestroy_KeepsStateWhenRemovalFails(t *testing.T) {
 	if err := os.MkdirAll(bogusGitDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(bogusGitDir, "gitdir"), []byte(filepath.Join(wtPath, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(wtPath, ".git"), []byte("gitdir: "+bogusGitDir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2317,6 +2328,9 @@ func TestDestroyPoolRefusesUnattributableWorktreePerPath(t *testing.T) {
 	_, poolDir, attributable, unattributable := acquireDisposableFromEachClone(t)
 	bogusGitDir := filepath.Join(t.TempDir(), "not-git-metadata")
 	if err := os.MkdirAll(bogusGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bogusGitDir, "gitdir"), []byte(filepath.Join(unattributable, ".git")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(unattributable, ".git"), []byte("gitdir: "+bogusGitDir+"\n"), 0o644); err != nil {
@@ -2661,6 +2675,19 @@ func TestPruneAllPrunesBackingMissingOrphanOnlyWithExplicitFlag(t *testing.T) {
 	}
 	if err := Release(poolDir, wtPath); err != nil {
 		t.Fatalf("Release failed: %v", err)
+	}
+	marker := filepath.Join(wtPath, ".git")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(string(data), "gitdir: "))
+	relative, err := filepath.Rel(wtPath, gitDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("gitdir: "+relative+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.RemoveAll(repoDir); err != nil {
 		t.Fatalf("RemoveAll repo failed: %v", err)
@@ -4388,24 +4415,36 @@ func TestList_FallsBackToRawScanWhenFilteringFails(t *testing.T) {
 func TestList_ReportsUnverifiedWhenTheProcessTableCannotBeRead(t *testing.T) {
 	repoDir, poolDir := setupRepo(t)
 
-	wtPath, err := Acquire(repoDir, poolDir, 4, nil)
-	if err != nil {
-		t.Fatalf("Acquire failed: %v", err)
+	for range 2 {
+		if _, err := AcquireLease(repoDir, poolDir, 2, nil, "fixture"); err != nil {
+			t.Fatalf("AcquireLease failed: %v", err)
+		}
 	}
-	clearOwnerReservation(t, poolDir, wtPath)
+	state, err := ReadState(poolDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.Worktrees {
+		clearLease(&state.Worktrees[i])
+	}
+	if err := WriteState(poolDir, state); err != nil {
+		t.Fatal(err)
+	}
 
 	scans := 0
-	restore := swapListProcessSeams(
-		func(string) ([]process.ProcessInfo, error) {
-			scans++
-			return nil, errors.New("cannot read the process table")
-		},
-		func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
-			t.Error("List must not filter a scan that failed")
-			return nil, nil
-		},
-	)
-	t.Cleanup(restore)
+	originalScan, originalFilter := findProcessesInWorktrees, dropProtectedProcesses
+	t.Cleanup(func() {
+		findProcessesInWorktrees, dropProtectedProcesses = originalScan, originalFilter
+	})
+	findProcessesInWorktrees = func(paths []string) (map[string][]process.ProcessInfo, error) {
+		scans++
+		// Partial results from a failed batch must not survive as observations.
+		return map[string][]process.ProcessInfo{paths[0]: {{PID: 4321, Name: "partial"}}}, errors.New("cannot read the process table")
+	}
+	dropProtectedProcesses = func([]process.ProcessInfo) ([]process.ProcessInfo, error) {
+		t.Error("List must not filter a scan that failed")
+		return nil, nil
+	}
 
 	var statuses []WorktreeStatus
 	stderr := captureStderr(t, func() {
@@ -4417,17 +4456,19 @@ func TestList_ReportsUnverifiedWhenTheProcessTableCannotBeRead(t *testing.T) {
 	if scans != 1 {
 		t.Fatalf("expected the failing scan to run once, ran %d times", scans)
 	}
-	if len(statuses) != 1 {
-		t.Fatalf("expected one worktree, got %#v", statuses)
+	if len(statuses) != 2 {
+		t.Fatalf("expected two worktrees, got %#v", statuses)
 	}
-	if len(statuses[0].Processes) != 0 {
-		t.Fatalf("expected no processes when the scan failed, got %#v", statuses[0].Processes)
+	for _, status := range statuses {
+		if len(status.Processes) != 0 {
+			t.Errorf("expected no processes when the scan failed, got %#v", status.Processes)
+		}
+		if status.Status != StatusUnverified {
+			t.Errorf("expected %q when the scan failed, got %q", StatusUnverified, status.Status)
+		}
 	}
-	if statuses[0].Status != StatusUnverified {
-		t.Fatalf("expected %q when the scan failed, got %q", StatusUnverified, statuses[0].Status)
-	}
-	if !strings.Contains(stderr, "WARNING") || !strings.Contains(stderr, wtPath) {
-		t.Fatalf("expected a warning naming %s, got stderr %q", wtPath, stderr)
+	if strings.Count(stderr, "WARNING") != 1 || !strings.Contains(stderr, poolDir) {
+		t.Fatalf("expected one warning naming pool %s, got stderr %q", poolDir, stderr)
 	}
 }
 

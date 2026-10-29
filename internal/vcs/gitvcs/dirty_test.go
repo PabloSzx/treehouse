@@ -53,8 +53,8 @@ func TestIsDirtyObservesChangesAfterCachedCleanResult(t *testing.T) {
 	assertDirty(true)
 }
 
-// Listing checks cleanliness outside the pool lock while get or return may be
-// resetting the same slot. Git refreshes a stale index only while holding
+// Prune and destroy check cleanliness outside the pool lock while get or return
+// may be resetting the same slot. Git refreshes a stale index only while holding
 // index.lock, so an observation that rewrites the index can make that
 // concurrent reset fail with "index.lock: File exists".
 func TestIsDirtyLeavesStaleIndexUnwritten(t *testing.T) {
