@@ -254,6 +254,11 @@ func RecoveryHeadContained(path, base string) bool {
 	return gitvcs.RecoveryHeadContained(path, base)
 }
 
+// ExistingGitWorktreeLock reports an existing HEAD or index lock in a Git slot.
+func ExistingGitWorktreeLock(path string) (string, error) {
+	return gitvcs.ExistingWorktreeLock(path)
+}
+
 // FindRepoRoot returns the repository or worktree root for the current
 // working directory.
 func FindRepoRoot() (string, error) { return backendFor("").FindRepoRootFrom("") }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -485,6 +486,8 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		otherFlavor := 0
 		otherClone := 0
 		unverifiedClone := 0
+		var candidates []int
+		var candidatePaths []string
 		for i, wt := range state.Worktrees {
 			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
@@ -523,8 +526,27 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				otherClone++
 				continue
 			}
-			inUse, _ := process.IsWorktreeInUse(wt.Path)
-			if inUse {
+			if flavor == "git" {
+				lock, err := vcs.ExistingGitWorktreeLock(wt.Path)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: cannot inspect Git locks: %v\n", wt.Name, err)
+					continue
+				}
+				if lock != "" {
+					fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: existing %s\n", wt.Name, lock)
+					continue
+				}
+			}
+			candidates = append(candidates, i)
+			candidatePaths = append(candidatePaths, wt.Path)
+		}
+		processes, scanErr := findProcessesInWorktrees(candidatePaths)
+		if scanErr != nil {
+			fmt.Fprintf(os.Stderr, "treehouse: cannot verify candidate processes; skipping reuse: %v\n", scanErr)
+		}
+		for _, i := range candidates {
+			wt := state.Worktrees[i]
+			if scanErr != nil || len(processes[wt.Path]) > 0 {
 				continue
 			}
 			// Skip a slot that carries unlanded work. A crashed or rebooted owner
@@ -551,7 +573,19 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			if !wt.SeedInventoryKnown {
 				seededPaths = nil
 			}
+			// The batch is only a shortlist; a writer may have arrived during
+			// cleanliness and ancestry checks. Raw processes still block reuse.
+			current, err := findProcessesInWorktrees([]string{wt.Path})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: cannot recheck processes: %v\n", wt.Name, err)
+				continue
+			}
+			if len(current[wt.Path]) > 0 {
+				continue
+			}
 			if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths); err != nil {
+				reason, _, _ := strings.Cut(err.Error(), "\n")
+				fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: reset failed: %s\n", wt.Name, reason)
 				continue
 			}
 			state.Worktrees[i].BaseBranch = opts.baseBranch

@@ -917,6 +917,23 @@ func gitPath(worktreePath, name string) (string, error) {
 	return filepath.Clean(p), nil
 }
 
+// ExistingWorktreeLock checks per-worktree metadata without changing any lock.
+func ExistingWorktreeLock(worktreePath string) (string, error) {
+	headPath, err := gitPath(worktreePath, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, name := range []string{"HEAD.lock", "index.lock"} {
+		lockPath := filepath.Join(filepath.Dir(headPath), name)
+		if _, err := os.Lstat(lockPath); err == nil {
+			return lockPath, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
 func isCommitID(s string) bool {
 	n := len(s)
 	if n != 40 && n != 64 {
@@ -1404,11 +1421,8 @@ func readTree(repoRoot, ref string) (map[string]string, error) {
 
 // IsDirty reports tracked or untracked changes, ignoring status.showUntrackedFiles.
 func IsDirty(worktreePath string) (bool, error) {
-	out, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=all")
-	if err != nil {
-		return false, err
-	}
-	return out != "", nil
+	out, err := runGit(worktreePath, "status", "--porcelain", "--untracked-files=normal", "--no-renames")
+	return out != "" || err != nil, err
 }
 
 func runGit(dir string, args ...string) (string, error) {
