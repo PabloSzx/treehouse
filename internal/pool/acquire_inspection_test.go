@@ -32,34 +32,30 @@ func idleAcquisitionSlots(t *testing.T, count int) (repo, poolDir string, paths 
 }
 
 func TestAcquireSkipsGitLockedCandidateBeforeInspection(t *testing.T) {
-	for _, lock := range []string{"HEAD.lock", "index.lock"} {
-		t.Run(lock, func(t *testing.T) {
-			repo, poolDir, paths := idleAcquisitionSlots(t, 2)
-			lockPath := gitOut(t, paths[0], "rev-parse", "--path-format=absolute", "--git-path", lock)
-			if err := os.WriteFile(lockPath, []byte("keep existing lock\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			trace := filepath.Join(t.TempDir(), "git-trace.json")
-			t.Setenv("GIT_TRACE2_EVENT", trace)
-			original := findProcessesInWorktrees
-			t.Cleanup(func() { findProcessesInWorktrees = original })
-			findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
-				if slices.Contains(roots, paths[0]) {
-					t.Errorf("locked candidate reached process inspection: %v", roots)
-				}
-				return nil, nil
-			}
-			acquired, err := AcquireLeaseInfo(repo, poolDir, 2, nil, "test")
-			if err != nil || acquired.Path != paths[1] || acquired.LeaseID == "" {
-				t.Fatalf("acquisition=%+v err=%v; want second slot", acquired, err)
-			}
-			if data, err := os.ReadFile(lockPath); err != nil || string(data) != "keep existing lock\n" {
-				t.Fatalf("existing lock changed: %q, %v", data, err)
-			}
-			if gitRanInWorktree(t, trace, paths[0], "status") {
-				t.Fatalf("locked candidate reached dirty inspection: %s", paths[0])
-			}
-		})
+	repo, poolDir, paths := idleAcquisitionSlots(t, 2)
+	lockPath := gitOut(t, paths[0], "rev-parse", "--path-format=absolute", "--git-path", "index.lock")
+	if err := os.WriteFile(lockPath, []byte("keep existing lock\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trace := filepath.Join(t.TempDir(), "git-trace.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
+	original := findProcessesInWorktrees
+	t.Cleanup(func() { findProcessesInWorktrees = original })
+	findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
+		if slices.Contains(roots, paths[0]) {
+			t.Errorf("locked candidate reached process inspection: %v", roots)
+		}
+		return nil, nil
+	}
+	acquired, err := AcquireLeaseInfo(repo, poolDir, 2, nil, "test")
+	if err != nil || acquired.Path != paths[1] || acquired.LeaseID == "" {
+		t.Fatalf("acquisition=%+v err=%v; want second slot", acquired, err)
+	}
+	if data, err := os.ReadFile(lockPath); err != nil || string(data) != "keep existing lock\n" {
+		t.Fatalf("existing lock changed: %q, %v", data, err)
+	}
+	if gitRanInWorktree(t, trace, paths[0], "status") {
+		t.Fatalf("locked candidate reached dirty inspection: %s", paths[0])
 	}
 }
 

@@ -61,18 +61,18 @@ func worktreeGitDir(worktreePath string) (string, error) {
 }
 
 // ExistingWorktreeLock checks validated per-worktree metadata without changing locks.
+// HEAD.lock is left to the guarded reset, which recovers Treehouse-owned locks
+// and reports anonymous ones.
 func ExistingWorktreeLock(worktreePath string) (string, error) {
 	gitdir, err := worktreeGitDir(worktreePath)
 	if err != nil {
 		return "", err
 	}
-	for _, name := range []string{"HEAD.lock", "index.lock"} {
-		lockPath := filepath.Join(gitdir, name)
-		if _, err := os.Lstat(lockPath); err == nil {
-			return lockPath, nil
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
+	lockPath := filepath.Join(gitdir, "index.lock")
+	if _, err := os.Lstat(lockPath); err == nil {
+		return lockPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
 	}
 	return "", nil
 }
