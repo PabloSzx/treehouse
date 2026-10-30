@@ -25,15 +25,15 @@ func TestIsDirtyDoesNotEnumerateUntrackedDescendants(t *testing.T) {
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		var event struct {
-			Category string `json:"category"`
-			Key      string `json:"key"`
-			Value    string `json:"value"`
+			Category string          `json:"category"`
+			Key      string          `json:"key"`
+			Value    json.RawMessage `json:"value"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatal(err)
 		}
 		if event.Category == "status" && event.Key == "count/untracked" {
-			if event.Value != "1" {
+			if string(event.Value) != `"1"` {
 				t.Fatalf("boolean dirty check enumerated %s untracked entries; one directory entry suffices", event.Value)
 			}
 			return
