@@ -127,53 +127,67 @@ func TestAcquireBatchesProcessInspection(t *testing.T) {
 	})
 }
 
-func TestAcquireProcessInspectionFailsClosed(t *testing.T) {
-	for _, stage := range []string{"batch error", "partial batch error", "revalidation error", "new process"} {
+func TestAcquireRecheckSkipsNewProcess(t *testing.T) {
+	repo, poolDir, paths := idleAcquisitionSlots(t, 2)
+	if err := os.WriteFile(filepath.Join(paths[0], "untracked"), []byte("preserve\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := findProcessesInWorktrees
+	t.Cleanup(func() { findProcessesInWorktrees = original })
+	calls := 0
+	findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
+		calls++
+		if calls > 1 {
+			return map[string][]process.ProcessInfo{paths[1]: {{PID: 123, Name: "writer"}}}, nil
+		}
+		return nil, nil
+	}
+	if acquired, err := AcquireLeaseInfo(repo, poolDir, 2, nil, "test"); err == nil {
+		t.Errorf("in-use candidate acquired: %+v", acquired)
+	}
+	if calls != 2 {
+		t.Errorf("process scans=%d; want batch plus selected-slot revalidation", calls)
+	}
+	state, err := ReadState(poolDir)
+	if err != nil || len(state.Worktrees) != 2 {
+		t.Fatalf("failed acquisition altered membership: %+v, %v", state, err)
+	}
+	for _, wt := range state.Worktrees {
+		if wt.Leased || wt.OwnerPID != 0 {
+			t.Fatalf("failed acquisition reserved a slot: %+v", wt)
+		}
+	}
+}
+
+func TestAcquireIgnoresProcessScanErrors(t *testing.T) {
+	for _, stage := range []string{"batch error", "revalidation error"} {
 		t.Run(stage, func(t *testing.T) {
-			count := 1
-			if stage != "batch error" {
-				count = 2
-			}
-			repo, poolDir, paths := idleAcquisitionSlots(t, count)
-			revalidated := stage == "revalidation error" || stage == "new process"
-			if revalidated {
+			repo, poolDir, paths := idleAcquisitionSlots(t, 2)
+			want := paths[0]
+			if stage == "revalidation error" {
 				if err := os.WriteFile(filepath.Join(paths[0], "untracked"), []byte("preserve\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+				want = paths[1]
 			}
-			last := paths[count-1]
 			original := findProcessesInWorktrees
 			t.Cleanup(func() { findProcessesInWorktrees = original })
 			calls := 0
 			findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
 				calls++
-				if stage == "batch error" || stage == "partial batch error" || calls > 1 && stage == "revalidation error" {
-					return map[string][]process.ProcessInfo{last: {}}, errors.New("process enumeration unavailable")
-				}
-				if calls > 1 && stage == "new process" {
-					return map[string][]process.ProcessInfo{last: {{PID: 123, Name: "writer"}}}, nil
+				if stage == "batch error" || calls > 1 {
+					return nil, errors.New("process enumeration unavailable")
 				}
 				return nil, nil
 			}
 			stderr := captureStderr(t, func() {
-				if acquired, err := AcquireLeaseInfo(repo, poolDir, count, nil, "test"); err == nil {
-					t.Errorf("unverified/in-use candidate acquired: %+v", acquired)
+				acquired, err := AcquireLeaseInfo(repo, poolDir, 2, nil, "test")
+				if err != nil || acquired.Path != want {
+					t.Errorf("acquisition=%+v err=%v; want reuse of %s", acquired, err, want)
 				}
 			})
-			if revalidated && calls != 2 {
-				t.Errorf("process scans=%d; want batch plus selected-slot revalidation", calls)
-			}
-			if stage != "new process" && !strings.Contains(stderr, "process enumeration unavailable") {
-				t.Errorf("missing enumeration failure diagnostic: %s", stderr)
-			}
-			state, err := ReadState(poolDir)
-			if err != nil || len(state.Worktrees) != count {
-				t.Fatalf("failed acquisition altered membership: %+v, %v", state, err)
-			}
-			for _, wt := range state.Worktrees {
-				if wt.Leased || wt.OwnerPID != 0 {
-					t.Fatalf("failed acquisition reserved a slot: %+v", wt)
-				}
+			if strings.Contains(stderr, "process enumeration unavailable") {
+				t.Errorf("unexpected scan failure diagnostic: %s", stderr)
 			}
 		})
 	}

@@ -542,14 +542,11 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			candidates = append(candidates, i)
 			candidatePaths = append(candidatePaths, wt.Path)
 		}
-		processes, scanErr := findProcessesInWorktrees(candidatePaths)
-		if scanErr != nil {
-			fmt.Fprintf(os.Stderr, "treehouse: cannot verify candidate processes; skipping reuse: %v\n", scanErr)
-		}
+		processes, _ := findProcessesInWorktrees(candidatePaths)
 		inspectedEarlier := false
 		for _, i := range candidates {
 			wt := state.Worktrees[i]
-			if scanErr != nil || len(processes[wt.Path]) > 0 {
+			if len(processes[wt.Path]) > 0 {
 				continue
 			}
 			batchStale := inspectedEarlier
@@ -582,11 +579,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			// candidates' VCS checks run. Recheck under the pool lock
 			// immediately before guarded reset.
 			if batchStale {
-				current, err := findProcessesInWorktrees([]string{wt.Path})
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: cannot recheck processes: %v\n", wt.Name, err)
-					continue
-				}
+				current, _ := findProcessesInWorktrees([]string{wt.Path})
 				if len(current[wt.Path]) > 0 {
 					continue
 				}
