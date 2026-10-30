@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// An existing marker can identify Git while pointing at missing metadata.
-// A failed inspection must not advertise that slot as clean and available.
+// A valid registration does not prove its index can be inspected.
+// A failed cleanliness check must not advertise the slot as available.
 func TestListFailedCleanlinessCheckIsUnverified(t *testing.T) {
 	repo, poolDir := setupRepo(t)
 	path, err := Acquire(repo, poolDir, 1, nil)
@@ -16,8 +16,11 @@ func TestListFailedCleanlinessCheckIsUnverified(t *testing.T) {
 		t.Fatal(err)
 	}
 	clearOwnerReservation(t, poolDir, path)
-	marker := "gitdir: " + filepath.Join(t.TempDir(), "missing") + "\n"
-	if err := os.WriteFile(filepath.Join(path, ".git"), []byte(marker), 0o644); err != nil {
+	indexPath := gitOut(t, path, "rev-parse", "--git-path", "index")
+	if !filepath.IsAbs(indexPath) {
+		indexPath = filepath.Join(path, indexPath)
+	}
+	if err := os.WriteFile(indexPath, []byte("invalid index\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var statuses []WorktreeStatus
