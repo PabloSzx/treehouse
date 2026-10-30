@@ -525,7 +525,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 					continue
 				}
 			}
-			candidatePaths = append(candidatePaths, wt.Path)
+			if identityErr == nil {
+				candidatePaths = append(candidatePaths, wt.Path)
+			}
 		}
 		processes, _ := findProcessesInWorktrees(candidatePaths)
 		inspectedEarlier := false
