@@ -535,13 +535,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				continue
 			}
 			if flavor == "git" {
-				lock, err := vcs.ExistingGitWorktreeLock(wt.Path)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: cannot inspect Git locks: %v\n", wt.Name, err)
-					continue
-				}
-				if lock != "" {
-					fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: existing %s\n", wt.Name, lock)
+				if lock, err := vcs.ExistingGitWorktreeLock(wt.Path); err != nil || lock != "" {
 					continue
 				}
 			}
@@ -552,11 +546,14 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		if scanErr != nil {
 			fmt.Fprintf(os.Stderr, "treehouse: cannot verify candidate processes; skipping reuse: %v\n", scanErr)
 		}
+		inspectedEarlier := false
 		for _, i := range candidates {
 			wt := state.Worktrees[i]
 			if scanErr != nil || len(processes[wt.Path]) > 0 {
 				continue
 			}
+			batchStale := inspectedEarlier
+			inspectedEarlier = true
 			// Skip a slot that carries unlanded work. A crashed or rebooted owner
 			// leaves the reservation empty while its worktree still holds committed
 			// commits (a clean tree passes IsDirty), so availability alone must not
@@ -581,15 +578,18 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			if !wt.SeedInventoryKnown {
 				seededPaths = nil
 			}
-			// The batch is only a shortlist; a writer may arrive during the VCS
-			// checks. Recheck under the pool lock immediately before guarded reset.
-			current, err := findProcessesInWorktrees([]string{wt.Path})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: cannot recheck processes: %v\n", wt.Name, err)
-				continue
-			}
-			if len(current[wt.Path]) > 0 {
-				continue
+			// The batch is only a shortlist; a writer may arrive while earlier
+			// candidates' VCS checks run. Recheck under the pool lock
+			// immediately before guarded reset.
+			if batchStale {
+				current, err := findProcessesInWorktrees([]string{wt.Path})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "treehouse: skipped slot %s: cannot recheck processes: %v\n", wt.Name, err)
+					continue
+				}
+				if len(current[wt.Path]) > 0 {
+					continue
+				}
 			}
 			if err := vcs.ResetWorktreeToRefWithSeededPaths(wt.Path, resetRef, head, true, seededPaths); err != nil {
 				reason, _, _ := strings.Cut(err.Error(), "\n")

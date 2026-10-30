@@ -146,8 +146,8 @@ func TestIsDirtySubmoduleParityWithFullStatus(t *testing.T) {
 	if err := os.WriteFile(index, []byte("invalid index\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if dirty, err := IsDirty(repo); err == nil || !dirty {
-		t.Errorf("unreadable submodule index: dirty=%v err=%v", dirty, err)
+	if _, err := IsDirty(repo); err == nil {
+		t.Errorf("unreadable submodule index: expected an error")
 	}
 	if err := os.WriteFile(index, before, 0o644); err != nil {
 		t.Fatal(err)

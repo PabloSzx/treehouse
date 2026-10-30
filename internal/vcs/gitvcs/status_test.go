@@ -41,9 +41,3 @@ func TestIsDirtyDoesNotEnumerateUntrackedDescendants(t *testing.T) {
 	}
 	t.Fatal("git trace did not report the untracked entry count")
 }
-
-func TestIsDirtyFailedInspectionIsNotClean(t *testing.T) {
-	if dirty, err := IsDirty(t.TempDir()); err == nil || !dirty {
-		t.Fatalf("unverified directory: dirty=%v err=%v", dirty, err)
-	}
-}

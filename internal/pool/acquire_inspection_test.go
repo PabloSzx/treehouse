@@ -49,16 +49,9 @@ func TestAcquireSkipsGitLockedCandidateBeforeInspection(t *testing.T) {
 				}
 				return nil, nil
 			}
-			var acquired LeaseInfo
-			var err error
-			stderr := captureStderr(t, func() {
-				acquired, err = AcquireLeaseInfo(repo, poolDir, 2, nil, "test")
-			})
+			acquired, err := AcquireLeaseInfo(repo, poolDir, 2, nil, "test")
 			if err != nil || acquired.Path != paths[1] || acquired.LeaseID == "" {
 				t.Fatalf("acquisition=%+v err=%v; want second slot", acquired, err)
-			}
-			if !strings.Contains(stderr, "slot 1") || !strings.Contains(stderr, lock) {
-				t.Errorf("missing slot/lock diagnostic: %s", stderr)
 			}
 			if data, err := os.ReadFile(lockPath); err != nil || string(data) != "keep existing lock\n" {
 				t.Fatalf("existing lock changed: %q, %v", data, err)
@@ -95,44 +88,70 @@ func assertNoGitStatusInWorktree(t *testing.T, trace, worktree string) {
 }
 
 func TestAcquireBatchesProcessInspection(t *testing.T) {
-	repo, poolDir, paths := idleAcquisitionSlots(t, 3)
-	if err := os.WriteFile(filepath.Join(paths[0], "untracked"), []byte("preserve\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	original := findProcessesInWorktrees
-	t.Cleanup(func() { findProcessesInWorktrees = original })
-	var scans [][]string
-	findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
-		scans = append(scans, slices.Clone(roots))
-		return map[string][]process.ProcessInfo{paths[1]: {{PID: 123, Name: "codex"}}}, nil
-	}
-	acquired, err := AcquireLeaseInfo(repo, poolDir, 3, nil, "test")
-	if err != nil || acquired.Path != paths[2] {
-		t.Fatalf("acquisition=%+v err=%v; want third slot", acquired, err)
-	}
-	if want := [][]string{paths, {paths[2]}}; !reflect.DeepEqual(scans, want) {
-		t.Fatalf("process scans=%v; want one candidate batch and one selected-slot revalidation %v", scans, want)
-	}
+	t.Run("first candidate reused", func(t *testing.T) {
+		repo, poolDir, paths := idleAcquisitionSlots(t, 2)
+		original := findProcessesInWorktrees
+		t.Cleanup(func() { findProcessesInWorktrees = original })
+		var scans [][]string
+		findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
+			scans = append(scans, slices.Clone(roots))
+			return nil, nil
+		}
+		acquired, err := AcquireLeaseInfo(repo, poolDir, 2, nil, "test")
+		if err != nil || acquired.Path != paths[0] {
+			t.Fatalf("acquisition=%+v err=%v; want first slot", acquired, err)
+		}
+		if want := [][]string{paths}; !reflect.DeepEqual(scans, want) {
+			t.Fatalf("process scans=%v; want only the candidate batch %v", scans, want)
+		}
+	})
+	t.Run("earlier candidate inspected", func(t *testing.T) {
+		repo, poolDir, paths := idleAcquisitionSlots(t, 3)
+		if err := os.WriteFile(filepath.Join(paths[0], "untracked"), []byte("preserve\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		original := findProcessesInWorktrees
+		t.Cleanup(func() { findProcessesInWorktrees = original })
+		var scans [][]string
+		findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
+			scans = append(scans, slices.Clone(roots))
+			return map[string][]process.ProcessInfo{paths[1]: {{PID: 123, Name: "codex"}}}, nil
+		}
+		acquired, err := AcquireLeaseInfo(repo, poolDir, 3, nil, "test")
+		if err != nil || acquired.Path != paths[2] {
+			t.Fatalf("acquisition=%+v err=%v; want third slot", acquired, err)
+		}
+		if want := [][]string{paths, {paths[2]}}; !reflect.DeepEqual(scans, want) {
+			t.Fatalf("process scans=%v; want one candidate batch and one selected-slot revalidation %v", scans, want)
+		}
+	})
 }
 
 func TestAcquireProcessInspectionFailsClosed(t *testing.T) {
 	for _, stage := range []string{"batch error", "partial batch error", "revalidation error", "new process"} {
 		t.Run(stage, func(t *testing.T) {
 			count := 1
-			if stage == "partial batch error" {
+			if stage != "batch error" {
 				count = 2
 			}
 			repo, poolDir, paths := idleAcquisitionSlots(t, count)
+			revalidated := stage == "revalidation error" || stage == "new process"
+			if revalidated {
+				if err := os.WriteFile(filepath.Join(paths[0], "untracked"), []byte("preserve\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			last := paths[count-1]
 			original := findProcessesInWorktrees
 			t.Cleanup(func() { findProcessesInWorktrees = original })
 			calls := 0
 			findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
 				calls++
 				if stage == "batch error" || stage == "partial batch error" || calls > 1 && stage == "revalidation error" {
-					return map[string][]process.ProcessInfo{paths[0]: {}}, errors.New("process enumeration unavailable")
+					return map[string][]process.ProcessInfo{last: {}}, errors.New("process enumeration unavailable")
 				}
 				if calls > 1 && stage == "new process" {
-					return map[string][]process.ProcessInfo{paths[0]: {{PID: 123, Name: "writer"}}}, nil
+					return map[string][]process.ProcessInfo{last: {{PID: 123, Name: "writer"}}}, nil
 				}
 				return nil, nil
 			}
@@ -141,6 +160,9 @@ func TestAcquireProcessInspectionFailsClosed(t *testing.T) {
 					t.Errorf("unverified/in-use candidate acquired: %+v", acquired)
 				}
 			})
+			if revalidated && calls != 2 {
+				t.Errorf("process scans=%d; want batch plus selected-slot revalidation", calls)
+			}
 			if stage != "new process" && !strings.Contains(stderr, "process enumeration unavailable") {
 				t.Errorf("missing enumeration failure diagnostic: %s", stderr)
 			}
@@ -165,7 +187,7 @@ func TestAcquireReportsResetFailure(t *testing.T) {
 	calls := 0
 	findProcessesInWorktrees = func(roots []string) (map[string][]process.ProcessInfo, error) {
 		calls++
-		if calls == 2 {
+		if calls == 1 {
 			if err := os.WriteFile(lockPath, []byte("late lock\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
