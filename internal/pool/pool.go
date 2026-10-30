@@ -497,6 +497,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 		unverifiedClone := 0
 		var candidates []int
 		var candidatePaths []string
+		locked := map[int]bool{}
 		for i, wt := range state.Worktrees {
 			if wt.Destroying || wt.Leased || ownerAlive(wt) {
 				continue
@@ -517,6 +518,20 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				otherFlavor++
 				continue
 			}
+			candidates = append(candidates, i)
+			if flavor == "git" {
+				if lock, err := vcs.ExistingGitWorktreeLock(wt.Path); err != nil || lock != "" {
+					locked[i] = true
+					continue
+				}
+			}
+			candidatePaths = append(candidatePaths, wt.Path)
+		}
+		processes, _ := findProcessesInWorktrees(candidatePaths)
+		inspectedEarlier := false
+		for _, i := range candidates {
+			wt := state.Worktrees[i]
+			batchStale := inspectedEarlier
 			// Pools are shared by origin URL, but a linked worktree still
 			// belongs to one physical clone. Never reset or acquire another
 			// clone's slot, even when both clones have identical refs, and
@@ -525,6 +540,7 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				unverifiedClone++
 				continue
 			}
+			inspectedEarlier = true
 			candidateDir, err := acquisitionCommonGitDir(wt.Path)
 			if err != nil {
 				unverifiedClone++
@@ -534,23 +550,9 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 				otherClone++
 				continue
 			}
-			if flavor == "git" {
-				if lock, err := vcs.ExistingGitWorktreeLock(wt.Path); err != nil || lock != "" {
-					continue
-				}
-			}
-			candidates = append(candidates, i)
-			candidatePaths = append(candidatePaths, wt.Path)
-		}
-		processes, _ := findProcessesInWorktrees(candidatePaths)
-		inspectedEarlier := false
-		for _, i := range candidates {
-			wt := state.Worktrees[i]
-			if len(processes[wt.Path]) > 0 {
+			if locked[i] || len(processes[wt.Path]) > 0 {
 				continue
 			}
-			batchStale := inspectedEarlier
-			inspectedEarlier = true
 			// Skip a slot that carries unlanded work. A crashed or rebooted owner
 			// leaves the reservation empty while its worktree still holds committed
 			// commits (a clean tree passes IsDirty), so availability alone must not

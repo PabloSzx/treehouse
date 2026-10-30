@@ -56,18 +56,20 @@ func TestAcquireSkipsGitLockedCandidateBeforeInspection(t *testing.T) {
 			if data, err := os.ReadFile(lockPath); err != nil || string(data) != "keep existing lock\n" {
 				t.Fatalf("existing lock changed: %q, %v", data, err)
 			}
-			assertNoGitStatusInWorktree(t, trace, paths[0])
+			if gitRanInWorktree(t, trace, paths[0], "status") {
+				t.Fatalf("locked candidate reached dirty inspection: %s", paths[0])
+			}
 		})
 	}
 }
 
-func assertNoGitStatusInWorktree(t *testing.T, trace, worktree string) {
+func gitRanInWorktree(t *testing.T, trace, worktree, subcommand string) bool {
 	t.Helper()
 	data, err := os.ReadFile(trace)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statusSessions := make(map[string]bool)
+	sessions := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		var event struct {
 			Event    string   `json:"event"`
@@ -79,10 +81,29 @@ func assertNoGitStatusInWorktree(t *testing.T, trace, worktree string) {
 			t.Fatal(err)
 		}
 		if event.Event == "start" {
-			statusSessions[event.SID] = slices.Contains(event.Argv, "status")
+			sessions[event.SID] = slices.Contains(event.Argv, subcommand)
 		}
-		if event.Event == "def_repo" && statusSessions[event.SID] && filepath.Clean(event.Worktree) == filepath.Clean(worktree) {
-			t.Fatalf("locked candidate reached dirty inspection: %s", worktree)
+		if event.Event == "def_repo" && sessions[event.SID] && filepath.Clean(event.Worktree) == filepath.Clean(worktree) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAcquireResolvesCloneIdentityLazily(t *testing.T) {
+	repo, poolDir, paths := idleAcquisitionSlots(t, 3)
+	trace := filepath.Join(t.TempDir(), "git-trace.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
+	acquired, err := AcquireLeaseInfo(repo, poolDir, 3, nil, "test")
+	if err != nil || acquired.Path != paths[0] {
+		t.Fatalf("acquisition=%+v err=%v; want first slot", acquired, err)
+	}
+	if !gitRanInWorktree(t, trace, paths[0], "rev-parse") {
+		t.Fatalf("reused slot %s was not identity-checked", paths[0])
+	}
+	for _, path := range paths[1:] {
+		if gitRanInWorktree(t, trace, path, "rev-parse") {
+			t.Errorf("unselected slot %s was identity-checked", path)
 		}
 	}
 }
