@@ -599,10 +599,67 @@ func TestResetWorktreeToRefRefusesWhenDirtyAfterSafetyCheck(t *testing.T) {
 	}
 }
 
+func TestResetWorktreeToRefPreservesIgnoredCollisions(t *testing.T) {
+	for _, format := range refFormats {
+		for _, tc := range []struct{ name, tracked, ignored string }{
+			{"same path", "configuration", "configuration"},
+			{"tracked ancestor", "configuration", "configuration/local.env"},
+			{"tracked descendant", "configuration/base.txt", "configuration"},
+			{"case alias", "Configuration", "configuration"},
+		} {
+			t.Run(format+"/"+tc.name, func(t *testing.T) {
+				wtPath, _, _ := setupSafeResetWorktree(t, refFormatInitFlag(t, format))
+				writeTestFile(t, wtPath, tc.tracked, "base configuration\n")
+				if tc.name == "case alias" {
+					original, err := os.Stat(filepath.Join(wtPath, tc.tracked))
+					if err != nil {
+						t.Fatal(err)
+					}
+					alias, err := os.Stat(filepath.Join(wtPath, tc.ignored))
+					if err != nil || !os.SameFile(original, alias) {
+						t.Skip("case-insensitive filesystem required")
+					}
+					mustGit(t, wtPath, "config", "core.ignoreCase", "false")
+				}
+				mustGit(t, wtPath, "add", ".")
+				mustGit(t, wtPath, "commit", "-qm", "tracked configuration")
+				resetRef := mustGitOutput(t, wtPath, "rev-parse", "HEAD")
+				mustGit(t, wtPath, "rm", "-r", strings.Split(tc.tracked, "/")[0])
+				writeTestFile(t, wtPath, ".gitignore", "configuration\n")
+				mustGit(t, wtPath, "add", ".gitignore")
+				mustGit(t, wtPath, "commit", "-qm", "ignored configuration")
+				head := mustGitOutput(t, wtPath, "rev-parse", "HEAD")
+				writeTestFile(t, wtPath, tc.ignored, "retained configuration\n")
+
+				err := ResetWorktreeToRef(wtPath, resetRef, head, true)
+				if err == nil || !strings.Contains(err.Error(), "ignored") {
+					t.Fatalf("expected ignored-path collision refusal, got %v", err)
+				}
+				assertTestFile(t, wtPath, tc.ignored, "retained configuration\n")
+				if got := mustGitOutput(t, wtPath, "rev-parse", "HEAD"); got != head {
+					t.Fatalf("refused reset changed HEAD to %s", got)
+				}
+			})
+		}
+	}
+}
+
 func TestResetWorktreeToRefDiscardsDirtyWithoutRequireClean(t *testing.T) {
 	for _, format := range refFormats {
 		t.Run(format, func(t *testing.T) {
 			wtPath, resetRef, head := setupSafeResetWorktree(t, refFormatInitFlag(t, format))
+			writeTestFile(t, wtPath, ".gitignore", "*.env\n.cache*/\n")
+			mustGit(t, wtPath, "add", ".gitignore")
+			mustGit(t, wtPath, "commit", "-qm", "ignore local artifacts")
+			head = mustGitOutput(t, wtPath, "rev-parse", "HEAD")
+			ignored := []string{"configuration.env", ".cache/output", "unignored-parent/private.env"}
+			if runtime.GOOS != "windows" {
+				ignored = append(ignored, "bracket[cache]?.env", "private \nconfiguration.env", ".cache \"quoted\"\n/output")
+			}
+			writeTestFile(t, wtPath, "unignored-parent/scratch.txt", "discard\n")
+			for _, file := range ignored {
+				writeTestFile(t, wtPath, file, "retained artifact\n")
+			}
 			scratch := filepath.Join(wtPath, "scratch.txt")
 			if err := os.WriteFile(scratch, []byte("discard\n"), 0o644); err != nil {
 				t.Fatal(err)
@@ -620,6 +677,12 @@ func TestResetWorktreeToRefDiscardsDirtyWithoutRequireClean(t *testing.T) {
 			}
 			if _, err := os.Stat(scratch); !os.IsNotExist(err) {
 				t.Fatal("expected return-path reset to discard uncommitted work")
+			}
+			for _, file := range ignored {
+				assertTestFile(t, wtPath, file, "retained artifact\n")
+			}
+			if _, err := os.Stat(filepath.Join(wtPath, "unignored-parent", "scratch.txt")); !os.IsNotExist(err) {
+				t.Fatal("expected return to discard unignored siblings of retained files")
 			}
 		})
 	}
