@@ -845,13 +845,69 @@ func resetWorktreeToRef(worktreePath, ref, expectedHead string, requireClean boo
 		}
 	}
 
+	ignored, err := ignoredPathsForReset(worktreePath, ref)
+	if err != nil {
+		return err
+	}
 	if _, err := runGit(worktreePath, "read-tree", "--reset", "-u", ref); err != nil {
 		return err
 	}
-	if _, err := runGit(worktreePath, "clean", "-fd"); err != nil {
+	// The target revision may stop ignoring these paths. Keep the files that
+	// were ignored before the reset, not only those the new revision ignores.
+	cleanArgs := []string{"clean", "-fd"}
+	escape := strings.NewReplacer("\\", "\\\\", "*", "\\*", "?", "\\?", "[", "\\[", "]", "\\]", " ", "\\ ")
+	for _, file := range ignored {
+		cleanArgs = append(cleanArgs, "--exclude=/"+escape.Replace(file))
+	}
+	if _, err := runGit(worktreePath, cleanArgs...); err != nil {
 		return err
 	}
 	return move.commit()
+}
+
+func ignoredPathsForReset(worktreePath, ref string) ([]string, error) {
+	out, err := runGitRaw(worktreePath, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var ignored []string
+	for _, file := range bytes.Split(out, []byte{0}) {
+		if len(file) > 0 {
+			ignored = append(ignored, strings.TrimSuffix(string(file), "/"))
+		}
+	}
+	if len(ignored) == 0 {
+		return nil, nil
+	}
+	tree, err := readTree(worktreePath, ref)
+	if err != nil {
+		return nil, err
+	}
+	insensitive, err := worktreeCaseInsensitive(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	normalized := make([]string, len(ignored))
+	prefixes := make([]string, len(ignored))
+	for index, file := range ignored {
+		if insensitive {
+			file = strings.ToLower(file)
+		}
+		normalized[index] = file
+		prefixes[index] = file + "/"
+	}
+	for tracked := range tree {
+		if insensitive {
+			tracked = strings.ToLower(tracked)
+		}
+		prefix := tracked + "/"
+		for index, candidate := range normalized {
+			if tracked == candidate || strings.HasPrefix(tracked, prefixes[index]) || strings.HasPrefix(candidate, prefix) {
+				return nil, fmt.Errorf("refusing to overwrite ignored path %q", ignored[index])
+			}
+		}
+	}
+	return ignored, nil
 }
 
 // headMove holds a worktree's HEAD lock across a reset; commit moves HEAD to the reset target and releases it.
