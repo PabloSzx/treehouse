@@ -23,6 +23,7 @@ var (
 	destroyIncludeUnlanded bool
 	destroyIncludeInUse    bool
 	destroyIncludeLeased   bool
+	destroyIfLeaseID       string
 )
 
 var destroyCmd = &cobra.Command{
@@ -67,10 +68,21 @@ func init() {
 	destroyCmd.Flags().BoolVar(&destroyIncludeUnlanded, "include-unlanded", false, "Also remove dirty, unmerged, or unverified worktrees (irreversible data loss)")
 	destroyCmd.Flags().BoolVar(&destroyIncludeInUse, "include-in-use", false, "Also remove worktrees with a running process or owner reservation (processes terminated cleanly first)")
 	destroyCmd.Flags().BoolVar(&destroyIncludeLeased, "include-leased", false, "Also remove a leased worktree; only when the exact path is named, never via --all")
+	destroyCmd.Flags().StringVar(&destroyIfLeaseID, "if-lease-id", "", "Destroy only if the named worktree still carries this lease identity")
 	rootCmd.AddCommand(destroyCmd)
 }
 
 func destroyRunE(cmd *cobra.Command, args []string) error {
+	var expectedLeaseID *string
+	if cmd.Flags().Changed("if-lease-id") {
+		if destroyIfLeaseID == "" {
+			return errors.New("--if-lease-id cannot be empty")
+		}
+		if destroyAll {
+			return errors.New("--if-lease-id requires one named worktree, not --all")
+		}
+		expectedLeaseID = &destroyIfLeaseID
+	}
 	if destroyIncludeLeased && destroyAll {
 		return errors.New("--include-leased cannot be combined with --all; name the exact worktree path instead (leased worktrees are never removed in bulk)")
 	}
@@ -117,6 +129,7 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 		IncludeUnlanded: destroyIncludeUnlanded,
 		IncludeInUse:    destroyIncludeInUse,
 		IncludeLeased:   destroyIncludeLeased,
+		ExpectedLeaseID: expectedLeaseID,
 		PreDestroy:      preDestroy,
 	}
 	if destroyAll {
@@ -233,6 +246,9 @@ func destroySingleExit(result pool.DestroyResult, opts pool.DestroyOptions) erro
 				skip.Target.Name, skip.Target.Class, strings.Join(flags, " "))
 		}
 		return fmt.Errorf("did not destroy %s: %s", skip.Target.Name, skip.Target.Detail)
+	}
+	if opts.ExpectedLeaseID != nil {
+		return errors.New("conditional destroy did not remove the expected lease")
 	}
 	return nil
 }
