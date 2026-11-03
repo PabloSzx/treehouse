@@ -1919,18 +1919,22 @@ func TestDestroyWorktree_LeasedProcessRequiresIncludeInUse(t *testing.T) {
 		t.Fatalf("AcquireLease failed: %v", err)
 	}
 
+	removalRoot, err := removableWorktreeContainer(poolDir, wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	processRunning := true
 	fakeProcess := process.ProcessInfo{PID: 12345, Name: "cwd-holder"}
 	oldFindProcesses := findProcessesInWorktree
 	oldTerminateProcesses := terminateWorktreeProcesses
 	findProcessesInWorktree = func(path string) ([]process.ProcessInfo, error) {
-		if path == wtPath && processRunning {
+		if path == removalRoot && processRunning {
 			return []process.ProcessInfo{fakeProcess}, nil
 		}
 		return nil, nil
 	}
 	terminateWorktreeProcesses = func(path string, _ time.Duration) ([]process.ProcessInfo, error) {
-		if path == wtPath && processRunning {
+		if path == removalRoot && processRunning {
 			processRunning = false
 			return []process.ProcessInfo{fakeProcess}, nil
 		}
@@ -2097,7 +2101,7 @@ func TestExecuteDestroy_ReclassifiesBeforeReservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadState failed: %v", err)
 	}
-	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
+	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef, poolDir)
 	measureDestroySize(poolDir, &planned)
 
 	scratch := filepath.Join(wtPath, "raced-wip.txt")
@@ -2141,7 +2145,7 @@ func TestExecuteDestroy_KeepsStateWhenRemovalFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadState failed: %v", err)
 	}
-	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
+	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef, poolDir)
 	measureDestroySize(poolDir, &planned)
 
 	bogusGitDir := filepath.Join(t.TempDir(), "not-git-metadata")
@@ -2193,7 +2197,7 @@ func TestExecuteDestroy_ResolvesRepoRootPerWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadState failed: %v", err)
 	}
-	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef)
+	planned := classifyForDestroy(state.Worktrees[0], repoDir, defaultRef, poolDir)
 	measureDestroySize(poolDir, &planned)
 
 	resolveContext := fixedPruneContextResolver(pruneContext{RepoRoot: repoDir, DefaultRef: defaultRef})
@@ -2244,7 +2248,7 @@ func TestExecuteDestroy_RemovalFailureRestoresOriginalOwnerReservation(t *testin
 	if original.OwnerPID == 0 || original.OwnerStartedAt == 0 {
 		t.Fatalf("expected acquired worktree to have owner reservation, got %#v", original)
 	}
-	planned := classifyForDestroy(original, repoDir, defaultRef)
+	planned := classifyForDestroy(original, repoDir, defaultRef, poolDir)
 	measureDestroySize(poolDir, &planned)
 
 	runGit(t, repoDir, "worktree", "lock", "--reason", "test removal refusal", wtPath)

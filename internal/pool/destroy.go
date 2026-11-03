@@ -74,9 +74,11 @@ type destroyReservation struct {
 
 // DestroyTarget describes one worktree considered for destruction.
 type DestroyTarget struct {
-	Name  string
-	Path  string
-	Bytes int64
+	leaseID     string
+	removalRoot string
+	Name        string
+	Path        string
+	Bytes       int64
 	// Class is the first safety class assigned to the target, kept for simple
 	// callers and stable grouping.
 	Class DestroyClass
@@ -141,6 +143,8 @@ type DestroyOptions struct {
 	// exact worktree path is named (DestroyWorktree); a bulk pool destroy never
 	// removes leased worktrees regardless of this flag.
 	IncludeLeased bool
+	// ExpectedLeaseID restricts named destruction to that acquisition, including after hooks.
+	ExpectedLeaseID *string
 	// PreDestroy is the hook command list to run before deleting each worktree.
 	PreDestroy []string
 	// InspectTargets observes the locked target snapshot used by bulk destroy.
@@ -151,6 +155,9 @@ type DestroyOptions struct {
 // exact path is named, a leased worktree may be removed when IncludeLeased is
 // set. Missing opt-in flags are reported as skips, not errors.
 func DestroyWorktree(poolDir, worktreePath string, opts DestroyOptions) (DestroyResult, error) {
+	if err := (ReleasePreconditions{ExpectedLeaseID: opts.ExpectedLeaseID}).check(); err != nil {
+		return DestroyResult{}, err
+	}
 	var target *WorktreeEntry
 	if err := WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
@@ -187,6 +194,9 @@ func DestroyWorktree(poolDir, worktreePath string, opts DestroyOptions) (Destroy
 // `--all` path). Leased worktrees are NEVER removable here, regardless of
 // IncludeLeased: a lease can only be cleared by naming its exact path.
 func DestroyPool(poolDir string, opts DestroyOptions) (DestroyResult, error) {
+	if opts.ExpectedLeaseID != nil {
+		return DestroyResult{}, fmt.Errorf("a lease condition requires one named worktree")
+	}
 	var targets []WorktreeEntry
 	if err := WithStateLock(poolDir, func() error {
 		state, err := ReadState(poolDir)
@@ -221,7 +231,7 @@ func planAndDestroy(poolDir string, targets []WorktreeEntry, allowLeased bool, o
 		// A resolution failure leaves the default ref empty, which
 		// classifyForDestroy reports as unverified rather than disposable.
 		context := resolveDestroyContext(resolveContext, wt)
-		target := classifyForDestroy(wt, context.RepoRoot, context.DefaultRef)
+		target := classifyForDestroy(wt, context.RepoRoot, context.DefaultRef, poolDir)
 		measureDestroySize(poolDir, &target)
 		ok, skip := opts.allows(target, allowLeased)
 		if ok {
@@ -267,6 +277,10 @@ func resolveDestroyContext(resolveContext pruneContextResolver, wt WorktreeEntry
 // allows reports whether opts authorize removing target, returning a populated
 // DestroySkip otherwise.
 func (opts DestroyOptions) allows(target DestroyTarget, allowLeased bool) (bool, DestroySkip) {
+	if err := validateReleasePreconditions(WorktreeEntry{Path: target.Path, Leased: target.hasClass(DestroyLeased), LeaseID: target.leaseID}, ReleasePreconditions{ExpectedLeaseID: opts.ExpectedLeaseID}); err != nil {
+		target.Detail = err.Error()
+		return false, DestroySkip{Target: target}
+	}
 	if target.hasClass(DestroyDamaged) {
 		return false, DestroySkip{Target: target}
 	}
@@ -301,9 +315,9 @@ func (opts DestroyOptions) missingFlags(target DestroyTarget, allowLeased bool) 
 // process.FindProcessesInWorktree, backingRepositoryMissing, vcs.IsDirty,
 // vcs.IsHeadMergedIntoRef against the ref from resolvePruneDefaultRef, then
 // headLandedOnItsBase against the base the slot was cut from).
-func classifyForDestroy(wt WorktreeEntry, repoRoot, defaultRef string) DestroyTarget {
+func classifyForDestroy(wt WorktreeEntry, repoRoot, defaultRef, poolDir string) DestroyTarget {
 	flavor, markerErr := vcs.WorktreeBackendNameChecked(wt.Path)
-	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: flavor}
+	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: flavor, leaseID: wt.LeaseID}
 	if target.Flavor != "" && repoRoot != "" && target.Flavor != vcs.BackendNameFor(repoRoot) {
 		target.OtherFlavor = true
 	}
@@ -316,7 +330,13 @@ func classifyForDestroy(wt WorktreeEntry, repoRoot, defaultRef string) DestroyTa
 		target.addClass(DestroyLeased, detail)
 	}
 
-	procs, procErr := findProcessesInWorktree(wt.Path)
+	removalRoot, err := removableWorktreeContainer(poolDir, wt.Path)
+	if err != nil {
+		target.addClass(DestroyDamaged, "cannot verify removal boundary: "+err.Error())
+		return finalizeDestroyTarget(target)
+	}
+	target.removalRoot = removalRoot
+	procs, procErr := findProcessesInWorktree(removalRoot)
 	if ownerAlive(wt) || len(procs) > 0 {
 		target.Processes = procs
 		target.addClass(DestroyInUse, "")
@@ -438,7 +458,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pr
 				continue
 			}
 			context := resolveDestroyContext(resolveContext, state.Worktrees[i])
-			current := classifyForDestroy(state.Worktrees[i], context.RepoRoot, context.DefaultRef)
+			current := classifyForDestroy(state.Worktrees[i], context.RepoRoot, context.DefaultRef, poolDir)
 			if planned, ok := plannedByPath[current.Path]; ok && current.Bytes == 0 {
 				current.Bytes = planned.Bytes
 			}
@@ -499,7 +519,7 @@ func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pr
 			currentEntry := state.Worktrees[idx]
 			restoreOriginalOwnerReservation(&currentEntry, reservation)
 			context := resolveDestroyContext(resolveContext, currentEntry)
-			current := classifyForDestroy(currentEntry, context.RepoRoot, context.DefaultRef)
+			current := classifyForDestroy(currentEntry, context.RepoRoot, context.DefaultRef, poolDir)
 			measureDestroySize(poolDir, &current)
 			if planned, ok := plannedByPath[path]; ok && current.Bytes == 0 {
 				current.Bytes = planned.Bytes
@@ -512,13 +532,13 @@ func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pr
 			}
 
 			if current.hasClass(DestroyInUse) {
-				if _, err := terminateWorktreeProcesses(path, destroyGracePeriod); err != nil {
+				if _, err := terminateWorktreeProcesses(current.removalRoot, destroyGracePeriod); err != nil {
 					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not terminate worktree processes: " + err.Error()
 					skips = append(skips, DestroySkip{Target: current})
 					continue
 				}
-				survivors, err := findProcessesInWorktree(path)
+				survivors, err := findProcessesInWorktree(current.removalRoot)
 				if err != nil {
 					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not verify worktree processes stopped: " + err.Error()
