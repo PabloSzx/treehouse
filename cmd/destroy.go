@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -24,6 +25,8 @@ var (
 	destroyIncludeInUse    bool
 	destroyIncludeLeased   bool
 	destroyIfLeaseID       string
+	destroyExpireAfter     time.Duration
+	destroyTerminateAgents bool
 )
 
 var destroyCmd = &cobra.Command{
@@ -69,6 +72,8 @@ func init() {
 	destroyCmd.Flags().BoolVar(&destroyIncludeInUse, "include-in-use", false, "Also remove worktrees with a running process or owner reservation (processes terminated cleanly first)")
 	destroyCmd.Flags().BoolVar(&destroyIncludeLeased, "include-leased", false, "Also remove a leased worktree; only when the exact path is named, never via --all")
 	destroyCmd.Flags().StringVar(&destroyIfLeaseID, "if-lease-id", "", "Destroy only if the named worktree still carries this lease identity")
+	destroyCmd.Flags().DurationVar(&destroyExpireAfter, "expire-after", 0, "Require the current lease acquisition to be at least this old")
+	destroyCmd.Flags().BoolVar(&destroyTerminateAgents, "terminate-agent-sessions", false, "Terminate agent sessions too; requires --expire-after, --if-lease-id and --include-in-use")
 	rootCmd.AddCommand(destroyCmd)
 }
 
@@ -125,12 +130,14 @@ func destroyRunE(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := pool.DestroyOptions{
-		DryRun:          !destroyYes,
-		IncludeUnlanded: destroyIncludeUnlanded,
-		IncludeInUse:    destroyIncludeInUse,
-		IncludeLeased:   destroyIncludeLeased,
-		ExpectedLeaseID: expectedLeaseID,
-		PreDestroy:      preDestroy,
+		DryRun:                 !destroyYes,
+		IncludeUnlanded:        destroyIncludeUnlanded,
+		IncludeInUse:           destroyIncludeInUse,
+		IncludeLeased:          destroyIncludeLeased,
+		ExpectedLeaseID:        expectedLeaseID,
+		ExpireAfter:            destroyExpireAfter,
+		TerminateAgentSessions: destroyTerminateAgents,
+		PreDestroy:             preDestroy,
 	}
 	if destroyAll {
 		opts.InspectTargets = warnDestroyTargetRepoHooks

@@ -296,6 +296,9 @@ func releaseBaseBranch(repoRoot string, cfg config.Config) string {
 // worktree path or the requested JSON allocation to stdout and routes every
 // human-facing message to stderr, keeping both output modes machine-readable.
 func getLeaseRunE(repoRoot, poolDir string, cfg config.Config, options pool.AcquireOptions) error {
+	if err := pool.RegisterPool(poolDir); err != nil {
+		return fmt.Errorf("registering lease cleanup discovery: %w", err)
+	}
 	holder := getLeaseHolder
 	if holder == "" {
 		holder = os.Getenv("TREEHOUSE_LEASE_HOLDER")

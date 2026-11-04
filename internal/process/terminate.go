@@ -26,17 +26,32 @@ import (
 // process discovery or caller ancestry lookup fails. Individual kill failures
 // (e.g. a process already gone) are swallowed.
 func TerminateWorktreeProcesses(worktreePath string, gracePeriod time.Duration) ([]ProcessInfo, error) {
+	return terminateWorktreeProcesses(worktreePath, gracePeriod, false)
+}
+
+// TerminateExpiredWorktreeProcesses includes agent sessions after the allocator verifies expiry.
+func TerminateExpiredWorktreeProcesses(worktreePath string, gracePeriod time.Duration) ([]ProcessInfo, error) {
+	return terminateWorktreeProcesses(worktreePath, gracePeriod, true)
+}
+
+func terminateWorktreeProcesses(worktreePath string, gracePeriod time.Duration, includeAgents bool) ([]ProcessInfo, error) {
 	procs, err := FindProcessesInWorktree(worktreePath)
 	if err != nil {
 		return nil, err
 	}
-	procs, err = DropProtectedProcesses(procs)
+	filtered, err := DropProtectedProcesses(procs)
 	if err != nil {
 		return nil, err
 	}
-	procs, err = DropAgentSessions(procs)
-	if err != nil {
-		return nil, err
+	if includeAgents && len(filtered) != len(procs) {
+		return nil, fmt.Errorf("expiry cannot terminate its caller or ancestors")
+	}
+	procs = filtered
+	if !includeAgents {
+		procs, err = DropAgentSessions(procs)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(procs) == 0 {
 		return nil, nil

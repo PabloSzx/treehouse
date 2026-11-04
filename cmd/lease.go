@@ -66,6 +66,9 @@ func leaseRunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve pool directory: %w", err)
 	}
 
+	if err := pool.RegisterPool(poolDir); err != nil {
+		return fmt.Errorf("registering lease cleanup discovery: %w", err)
+	}
 	lease, err := pool.LeaseExisting(poolDir, args[0], holder)
 	if err != nil {
 		return err

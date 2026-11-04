@@ -75,6 +75,7 @@ type destroyReservation struct {
 // DestroyTarget describes one worktree considered for destruction.
 type DestroyTarget struct {
 	leaseID     string
+	leasedAt    time.Time
 	removalRoot string
 	Name        string
 	Path        string
@@ -145,6 +146,10 @@ type DestroyOptions struct {
 	IncludeLeased bool
 	// ExpectedLeaseID restricts named destruction to that acquisition, including after hooks.
 	ExpectedLeaseID *string
+	// ExpireAfter requires a known acquisition timestamp at least this old.
+	ExpireAfter time.Duration
+	// TerminateAgentSessions is restricted to conditional, age-checked destruction.
+	TerminateAgentSessions bool
 	// PreDestroy is the hook command list to run before deleting each worktree.
 	PreDestroy []string
 	// InspectTargets observes the locked target snapshot used by bulk destroy.
@@ -155,6 +160,9 @@ type DestroyOptions struct {
 // exact path is named, a leased worktree may be removed when IncludeLeased is
 // set. Missing opt-in flags are reported as skips, not errors.
 func DestroyWorktree(poolDir, worktreePath string, opts DestroyOptions) (DestroyResult, error) {
+	if err := opts.validateExpiry(); err != nil {
+		return DestroyResult{}, err
+	}
 	if err := (ReleasePreconditions{ExpectedLeaseID: opts.ExpectedLeaseID}).check(); err != nil {
 		return DestroyResult{}, err
 	}
@@ -194,6 +202,9 @@ func DestroyWorktree(poolDir, worktreePath string, opts DestroyOptions) (Destroy
 // `--all` path). Leased worktrees are NEVER removable here, regardless of
 // IncludeLeased: a lease can only be cleared by naming its exact path.
 func DestroyPool(poolDir string, opts DestroyOptions) (DestroyResult, error) {
+	if opts.ExpireAfter != 0 || opts.TerminateAgentSessions {
+		return DestroyResult{}, fmt.Errorf("expiry requires one exact worktree and lease identity")
+	}
 	if opts.ExpectedLeaseID != nil {
 		return DestroyResult{}, fmt.Errorf("a lease condition requires one named worktree")
 	}
@@ -276,7 +287,24 @@ func resolveDestroyContext(resolveContext pruneContextResolver, wt WorktreeEntry
 
 // allows reports whether opts authorize removing target, returning a populated
 // DestroySkip otherwise.
+func (opts DestroyOptions) validateExpiry() error {
+	if opts.ExpireAfter < 0 {
+		return fmt.Errorf("expiry duration must be positive")
+	}
+	if opts.ExpireAfter > 0 && (opts.ExpectedLeaseID == nil || !opts.IncludeLeased) {
+		return fmt.Errorf("expiry requires --if-lease-id and --include-leased")
+	}
+	if opts.TerminateAgentSessions && (opts.ExpireAfter <= 0 || !opts.IncludeInUse) {
+		return fmt.Errorf("terminating agent sessions requires age-checked expiry and --include-in-use")
+	}
+	return nil
+}
+
 func (opts DestroyOptions) allows(target DestroyTarget, allowLeased bool) (bool, DestroySkip) {
+	if opts.ExpireAfter > 0 && (!target.hasClass(DestroyLeased) || target.leasedAt.IsZero() || target.leasedAt.After(time.Now().Add(-opts.ExpireAfter))) {
+		target.Detail = "lease acquisition age is unknown or below the expiry threshold"
+		return false, DestroySkip{Target: target}
+	}
 	if err := validateReleasePreconditions(WorktreeEntry{Path: target.Path, Leased: target.hasClass(DestroyLeased), LeaseID: target.leaseID}, ReleasePreconditions{ExpectedLeaseID: opts.ExpectedLeaseID}); err != nil {
 		target.Detail = err.Error()
 		return false, DestroySkip{Target: target}
@@ -317,7 +345,7 @@ func (opts DestroyOptions) missingFlags(target DestroyTarget, allowLeased bool) 
 // headLandedOnItsBase against the base the slot was cut from).
 func classifyForDestroy(wt WorktreeEntry, repoRoot, defaultRef, poolDir string) DestroyTarget {
 	flavor, markerErr := vcs.WorktreeBackendNameChecked(wt.Path)
-	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: flavor, leaseID: wt.LeaseID}
+	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: flavor, leaseID: wt.LeaseID, leasedAt: wt.LeasedAt}
 	if target.Flavor != "" && repoRoot != "" && target.Flavor != vcs.BackendNameFor(repoRoot) {
 		target.OtherFlavor = true
 	}
@@ -532,7 +560,11 @@ func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pr
 			}
 
 			if current.hasClass(DestroyInUse) {
-				if _, err := terminateWorktreeProcesses(current.removalRoot, destroyGracePeriod); err != nil {
+				terminate := terminateWorktreeProcesses
+				if opts.TerminateAgentSessions {
+					terminate = process.TerminateExpiredWorktreeProcesses
+				}
+				if _, err := terminate(current.removalRoot, destroyGracePeriod); err != nil {
 					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
 					current.Detail = "could not terminate worktree processes: " + err.Error()
 					skips = append(skips, DestroySkip{Target: current})
@@ -545,12 +577,14 @@ func executeDestroy(poolDir string, removable []DestroyTarget, resolveContext pr
 					skips = append(skips, DestroySkip{Target: current})
 					continue
 				}
-				survivors, err = dropAgentSessions(survivors)
-				if err != nil {
-					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
-					current.Detail = "could not verify worktree processes stopped: " + err.Error()
-					skips = append(skips, DestroySkip{Target: current})
-					continue
+				if !opts.TerminateAgentSessions {
+					survivors, err = dropAgentSessions(survivors)
+					if err != nil {
+						restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
+						current.Detail = "could not verify worktree processes stopped: " + err.Error()
+						skips = append(skips, DestroySkip{Target: current})
+						continue
+					}
 				}
 				if len(survivors) > 0 {
 					restoreOriginalOwnerReservation(&state.Worktrees[idx], reservation)
