@@ -183,6 +183,18 @@ func TestTerminateWorktreeProcesses_SparesAgentSession(t *testing.T) {
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("agent session was terminated despite protection: %v", err)
 	}
+
+	finished := make(chan error, 1)
+	go func() { finished <- cmd.Wait() }()
+	targeted, err := TerminateExpiredWorktreeProcesses(dir, 500*time.Millisecond)
+	if err != nil || len(targeted) != 1 || targeted[0].PID != int32(cmd.Process.Pid) {
+		t.Fatalf("explicit expiry did not target the owned fixture: %+v, %v", targeted, err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expired agent fixture is still running")
+	}
 }
 
 func TestUnprotectedProcessesInWorktree_SparesAgentSession(t *testing.T) {
