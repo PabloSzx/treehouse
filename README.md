@@ -298,7 +298,9 @@ path=$(treehouse get --lease)
 
 It acquires a worktree exactly like `get`, but instead of opening a subshell it marks the worktree **leased** in treehouse's persistent state. By default it prints only the worktree's absolute path to stdout; `--json` prints the lease allocation instead. Every human-facing message goes to stderr, so either output mode stays clean.
 
-An ordinary lease keeps a worktree out of later `get` and `prune`, regardless of whether any process runs inside it, until the lease is explicitly released. Recovered leases have a separate, conservative automatic release path described in [Recovering missing pool state](#recovering-missing-pool-state).
+An ordinary lease keeps a worktree out of later `get` and `prune`, regardless of whether any process runs inside it, until the lease is explicitly released or destroyed through a named, conditional expiry. Recovered leases have a separate, conservative automatic release path described in [Recovering missing pool state](#recovering-missing-pool-state).
+
+Use `treehouse leases --json` from any directory to inspect durable lease identities across repositories without changing state or running recovery. It covers the configured root and pools registered when `get --lease` or `lease` issues a lease, including custom roots. The discovery index lives at `~/.local/state/treehouse/registered-pools.json`; pool state remains authoritative. Older custom pools not in those sources need `--pool /absolute/pool`, repeatable for multiple pools. Explicit inspection does not register them. Each entry includes the pool, path, verified removal boundary when available, identity, holder, acquisition time, and quarantine status. Unknown acquisition times are `null`. Discovery failures exit nonzero rather than returning a partial inventory.
 A bulk `treehouse destroy <pool> --all` never removes it either. Once its removal checks pass, removal requires naming its exact path with `--include-leased` and any other required flags. Invalid markers still block removal. See [Destroying worktrees](#destroying-worktrees).
 
 Pass `--lease-holder <label>` (or set `$TREEHOUSE_LEASE_HOLDER`) to record who holds the lease; `treehouse status` then shows it next to the `leased` state.
@@ -482,6 +484,21 @@ Destroy refuses a present but invalid marker as `[damaged]`, even with all `--in
 
 A single named worktree that is skipped for lack of a flag makes the command exit non-zero, so scripts notice that nothing happened.
 Bulk `--all` skips are normal and exit zero; inspect the summary to see what remains.
+
+#### Age-checked lease expiry
+
+An external cleanup service can add `--expire-after 168h` to a named destroy with
+`--if-lease-id` and `--include-leased`. Treehouse requires the same valid lease generation and a
+known acquisition timestamp at least that old, including after lifecycle hooks. Unknown or future
+ages, recovered leases, missing or invalid markers, and changed generations are refused.
+Expiry is never a bulk operation. Treehouse has no expiry daemon; callers own scheduling and retries.
+
+Ordinary destruction and return spare agent sessions. The additional
+`--terminate-agent-sessions` flag overrides that protection only with positive, conditional expiry
+and `--include-in-use`. It still refuses the caller and its ancestors and fails if process
+inspection or termination cannot be verified. `--yes` remains required for deletion, and
+`--include-unlanded` remains required for unpublished or dirty work. Checkout files are discarded;
+branch refs are retained. Inspect a dry run and authorize these risks before execution.
 
 #### Migrating from `--force`
 

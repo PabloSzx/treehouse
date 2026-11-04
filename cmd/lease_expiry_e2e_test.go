@@ -75,7 +75,7 @@ func TestLeaseCatalogIsReadOnlyAcrossRepositories(t *testing.T) {
 }
 
 func TestLeaseExpiryRequiresCurrentOldGeneration(t *testing.T) {
-	for _, scenario := range []string{"fresh", "expired", "unknown-age", "future-age", "wrong-generation"} {
+	for _, scenario := range []string{"fresh", "expired", "unknown-age", "future-age", "wrong-generation", "malformed-id", "recovered", "missing-marker"} {
 		t.Run(scenario, func(t *testing.T) {
 			repo, home := setupTestRepo(t)
 			lease := acquireLeaseJSON(t, repo, home, "legacy-owner")
@@ -105,7 +105,13 @@ func TestLeaseExpiryRequiresCurrentOldGeneration(t *testing.T) {
 						continue
 					}
 					switch scenario {
-					case "expired", "wrong-generation":
+					case "expired", "wrong-generation", "missing-marker":
+						state.Worktrees[i].LeasedAt = time.Now().Add(-8 * 24 * time.Hour)
+					case "malformed-id":
+						state.Worktrees[i].LeaseID = "malformed"
+						state.Worktrees[i].LeasedAt = time.Now().Add(-8 * 24 * time.Hour)
+					case "recovered":
+						state.Worktrees[i].LeaseHolder = pool.RecoveredLeaseHolder
 						state.Worktrees[i].LeasedAt = time.Now().Add(-8 * 24 * time.Hour)
 					case "unknown-age":
 						state.Worktrees[i].LeasedAt = time.Time{}
@@ -118,7 +124,15 @@ func TestLeaseExpiryRequiresCurrentOldGeneration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if scenario == "missing-marker" {
+				if err := os.Remove(filepath.Join(lease.Path, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			expected := lease.LeaseID
+			if scenario == "malformed-id" {
+				expected = "malformed"
+			}
 			if scenario == "wrong-generation" {
 				expected = strings.Repeat("0", 32)
 			}

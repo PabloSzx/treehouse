@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -74,12 +75,13 @@ type destroyReservation struct {
 
 // DestroyTarget describes one worktree considered for destruction.
 type DestroyTarget struct {
-	leaseID     string
-	leasedAt    time.Time
-	removalRoot string
-	Name        string
-	Path        string
-	Bytes       int64
+	leaseID        string
+	leasedAt       time.Time
+	expiryVerified bool
+	removalRoot    string
+	Name           string
+	Path           string
+	Bytes          int64
 	// Class is the first safety class assigned to the target, kept for simple
 	// callers and stable grouping.
 	Class DestroyClass
@@ -294,6 +296,12 @@ func (opts DestroyOptions) validateExpiry() error {
 	if opts.ExpireAfter > 0 && (opts.ExpectedLeaseID == nil || !opts.IncludeLeased) {
 		return fmt.Errorf("expiry requires --if-lease-id and --include-leased")
 	}
+	if opts.ExpireAfter > 0 {
+		identity, err := hex.DecodeString(*opts.ExpectedLeaseID)
+		if err != nil || len(identity) != 16 {
+			return fmt.Errorf("expiry requires a valid 128-bit lease identity")
+		}
+	}
 	if opts.TerminateAgentSessions && (opts.ExpireAfter <= 0 || !opts.IncludeInUse) {
 		return fmt.Errorf("terminating agent sessions requires age-checked expiry and --include-in-use")
 	}
@@ -301,6 +309,10 @@ func (opts DestroyOptions) validateExpiry() error {
 }
 
 func (opts DestroyOptions) allows(target DestroyTarget, allowLeased bool) (bool, DestroySkip) {
+	if opts.ExpireAfter > 0 && !target.expiryVerified {
+		target.Detail = "expiry requires an unrecovered lease and a verified worktree marker"
+		return false, DestroySkip{Target: target}
+	}
 	if opts.ExpireAfter > 0 && (!target.hasClass(DestroyLeased) || target.leasedAt.IsZero() || target.leasedAt.After(time.Now().Add(-opts.ExpireAfter))) {
 		target.Detail = "lease acquisition age is unknown or below the expiry threshold"
 		return false, DestroySkip{Target: target}
@@ -345,7 +357,8 @@ func (opts DestroyOptions) missingFlags(target DestroyTarget, allowLeased bool) 
 // headLandedOnItsBase against the base the slot was cut from).
 func classifyForDestroy(wt WorktreeEntry, repoRoot, defaultRef, poolDir string) DestroyTarget {
 	flavor, markerErr := vcs.WorktreeBackendNameChecked(wt.Path)
-	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: flavor, leaseID: wt.LeaseID, leasedAt: wt.LeasedAt}
+	target := DestroyTarget{Name: wt.Name, Path: wt.Path, Flavor: flavor, leaseID: wt.LeaseID, leasedAt: wt.LeasedAt,
+		expiryVerified: markerErr == nil && flavor != "" && !IsQuarantinedLeaseHolder(wt.LeaseHolder) && wt.RecoveryError == "" && wt.RecoveryReason == ""}
 	if target.Flavor != "" && repoRoot != "" && target.Flavor != vcs.BackendNameFor(repoRoot) {
 		target.OtherFlavor = true
 	}
