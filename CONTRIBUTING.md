@@ -20,8 +20,12 @@ make test
 
 ## Contribution Gate
 
-PRs to `main` must be raised through [no-mistakes](https://github.com/kunchenguid/no-mistakes).
-The required check `PR must be raised via no-mistakes` enforces this — a hand-opened PR
+Owner-authored PRs in the personal `PabloSzx/treehouse` fork use ordinary GitHub
+PRs and normal CI. Its workflow exempts `PabloSzx` only when running in that fork.
+These PRs do not require no-mistakes installation or attestation.
+
+PRs to upstream `kunchenguid/treehouse` must be raised through
+[no-mistakes](https://github.com/kunchenguid/no-mistakes). The required check `PR must be raised via no-mistakes` enforces this — a hand-opened PR
 will stay red until the branch is pushed through the gate. The gate writes a pipeline
 attestation whose `head_sha` matches the PR head; a hand-added marker is not enough.
 

@@ -51,3 +51,4 @@ jobs:
             github-actions[bot]
             dependabot[bot]
             kunchenguid
+            ${{ github.repository == 'PabloSzx/treehouse' && 'PabloSzx' || '' }}
