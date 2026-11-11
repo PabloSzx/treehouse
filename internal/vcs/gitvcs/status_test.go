@@ -70,6 +70,9 @@ func TestIsDirtyDoesNotEnumerateUntrackedDescendants(t *testing.T) {
 		writeTestFile(t, repo, filepath.Join("scratch", "nested", fmt.Sprintf("file-%d", i)), "untracked\n")
 	}
 	trace := filepath.Join(t.TempDir(), "trace.json")
+	if err := os.WriteFile(trace, []byte("{\"event\":\"data_json\",\"category\":\"trace2\",\"key\":\"unrelated\",\"value\":[]}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("GIT_TRACE2_EVENT", trace)
 	if dirty, err := IsDirty(repo); err != nil || !dirty {
 		t.Fatalf("nested untracked files: dirty=%v err=%v", dirty, err)
@@ -80,16 +83,20 @@ func TestIsDirtyDoesNotEnumerateUntrackedDescendants(t *testing.T) {
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		var event struct {
-			Category string `json:"category"`
-			Key      string `json:"key"`
-			Value    string `json:"value"`
+			Category string          `json:"category"`
+			Key      string          `json:"key"`
+			Value    json.RawMessage `json:"value"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatal(err)
 		}
 		if event.Category == "status" && event.Key == "count/untracked" {
-			if event.Value != "1" {
-				t.Fatalf("boolean dirty check enumerated %s untracked entries; one directory entry suffices", event.Value)
+			var count string
+			if err := json.Unmarshal(event.Value, &count); err != nil {
+				t.Fatal(err)
+			}
+			if count != "1" {
+				t.Fatalf("boolean dirty check enumerated %s untracked entries; one directory entry suffices", count)
 			}
 			return
 		}
