@@ -179,6 +179,7 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | `treehouse lease <name>`   | Durably lease an existing pool worktree in place, without touching its files or git state |
 | `treehouse enter <name>`   | Open a subshell in an existing worktree by name (the number from `status`), even if it is in use; pool state is left untouched |
 | `treehouse status`         | Show pool status (highlights leased and current worktrees) |
+| `treehouse capacity [--json]` | Show the effective limit, lease counts and unallocated capacity without inspecting checkout processes or cleanliness |
 | `treehouse return [path\|name]` | Release any lease and return a worktree only after verifying foreign processes stopped; the name is the number from `status` |
 | `treehouse return --all`   | Return every held worktree in the current repo pool |
 | `treehouse prune`          | Dry-run removal of stale idle worktrees in the current repo pool |
@@ -328,6 +329,8 @@ treehouse get --lease --no-fetch --json
 ```
 
 With `--no-fetch`, Treehouse resets or creates the worktree from existing local refs and never contacts `origin`. The caller is responsible for ensuring those refs and objects are current.
+
+`treehouse capacity --json` reports `pool`, `max_trees`, `total`, `leased`, `unleased` and `unallocated` using the same effective repository, configuration and root overrides as allocation. It reads reservations without taking the lifecycle lock or changing state. Unallocated capacity is clamped to zero if the limit is below the existing checkout count. Unleased checkouts are not verified idle, clean or reusable; use `status` for inspection. These counts are a snapshot, not a promise that an allocation will succeed.
 
 `treehouse status` reads an atomic pool-state snapshot without waiting for lifecycle operations or changing pool state. It leaves recovered files and leases untouched; automatic recovery runs during the next state-locking pool operation. Process inspection runs once per listing, and cleanliness checks share a 30-second budget. A failed or timed-out cleanliness check reports `unverified` and warns on stderr rather than reporting the slot available. Git may refresh its own index cache, and uses an existing filesystem-monitor configuration if present; Treehouse does not enable a monitor or change Git configuration.
 

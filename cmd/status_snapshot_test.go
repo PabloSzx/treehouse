@@ -75,20 +75,32 @@ func TestStatusReadsSnapshotDuringLifecycleOperation(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, treehouseBin, "status", "--json")
-			cmd.Dir, cmd.Env = repoDir, buildEnv(homeDir)
-			var stderr bytes.Buffer
-			cmd.Stderr = &stderr
-			out, err := cmd.Output()
-			if err != nil {
-				t.Fatalf("status must finish while the pool lock is held: %v, %v, stderr=%s", err, ctx.Err(), stderr.String())
-			}
-			var statuses []statusJSONResult
-			if err := json.Unmarshal(out, &statuses); err != nil {
-				t.Fatal(err)
-			}
-			if len(statuses) != 1 || statuses[0].Status != "leased" || statuses[0].LeaseHolder != wantHolder || statuses[0].LeaseID != lease.LeaseID {
-				t.Fatalf("snapshot loses the reservation: %s", out)
+			for _, verb := range []string{"status", "capacity"} {
+				cmd := exec.CommandContext(ctx, treehouseBin, verb, "--json")
+				cmd.Dir, cmd.Env = repoDir, buildEnv(homeDir)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				if err != nil {
+					t.Fatalf("%s must finish while the pool lock is held: %v, %v, stderr=%s", verb, err, ctx.Err(), stderr.String())
+				}
+				if verb == "status" {
+					var statuses []statusJSONResult
+					if err := json.Unmarshal(out, &statuses); err != nil {
+						t.Fatal(err)
+					}
+					if len(statuses) != 1 || statuses[0].Status != "leased" || statuses[0].LeaseHolder != wantHolder || statuses[0].LeaseID != lease.LeaseID {
+						t.Fatalf("snapshot loses the reservation: %s", out)
+					}
+				} else {
+					var capacity capacityJSON
+					if err := json.Unmarshal(out, &capacity); err != nil {
+						t.Fatal(err)
+					}
+					if capacity.Leased != 1 || capacity.Unleased != 0 || capacity.Total != 1 {
+						t.Fatalf("capacity loses the reservation: %s", out)
+					}
+				}
 			}
 			after, err := os.ReadFile(statePath)
 			if err != nil || !bytes.Equal(before, after) {
